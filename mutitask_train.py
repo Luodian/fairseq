@@ -1,4 +1,19 @@
-from .train import *
+#!/usr/bin/env python3
+import collections
+import math
+import torch
+
+from fairseq import options, progress_bar, tasks, utils
+from fairseq.data import iterators
+from fairseq.trainer import Trainer
+from fairseq.meters import AverageMeter, StopwatchMeter
+from train import (
+    load_dataset_splits,
+    load_checkpoint,
+    save_checkpoint,
+    validate,
+    get_training_stats,
+)
 
 
 def main(args):
@@ -20,8 +35,10 @@ def main(args):
     # Build model and criterion
     model = task.build_model(args)
     criterion = task.build_criterion(args)
-    print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
-    print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
+    print('| model {}, criterion {}'.format(
+        args.arch, criterion.__class__.__name__))
+    print('| num. model params: {}'.format(sum(p.numel()
+                                               for p in model.parameters())))
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of
@@ -30,7 +47,8 @@ def main(args):
         task.max_positions(),
         model.max_positions(),
     )
-    dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
+    dummy_batch = task.dataset('train').get_dummy_batch(
+        args.max_tokens, max_positions)
 
     # Build trainer
     trainer = Trainer(args, task, model, criterion, dummy_batch)
@@ -66,7 +84,6 @@ def main(args):
         shard_id=args.distributed_rank,
     )
 
-
     # Load the latest checkpoint if one is available
     if not load_checkpoint(args, trainer, epoch_itr):
         trainer.dummy_train_step([dummy_batch])
@@ -81,10 +98,11 @@ def main(args):
     valid_subsets = args.valid_subset.split(',')
     while lr > args.min_lr and epoch_itr.epoch < max_epoch and trainer.get_num_updates() < max_update:
         # train for one epoch
-        train(args, trainer, task, epoch_itr, aux_itr)
+        train(args, trainer, task, epoch_itr, epoch_aux_itr)
 
         if epoch_itr.epoch % args.validate_interval == 0:
-            valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
+            valid_losses = validate(
+                args, trainer, task, epoch_itr, valid_subsets)
 
         # only use first validation loss to update the learning rate
         lr = trainer.lr_step(epoch_itr.epoch, valid_losses[0])
@@ -96,15 +114,94 @@ def main(args):
     print('| done training in {:.1f} seconds'.format(train_meter.sum))
 
 
+def train(args, trainer, task, epoch_itr, epoch_aux_itr):
+    """Train the model for one epoch."""
+
+    # Update parameters every N batches
+    if epoch_itr.epoch <= len(args.update_freq):
+        update_freq = args.update_freq[epoch_itr.epoch - 1]
+    else:
+        update_freq = args.update_freq[-1]
+
+    # Initialize data iterator
+    itr = epoch_itr.next_epoch_itr(
+        fix_batches_to_gpus=args.fix_batches_to_gpus)
+    itr = iterators.GroupedIterator(itr, update_freq)
+    progress = progress_bar.build_progress_bar(
+        args, itr, epoch_itr.epoch, no_progress_bar='simple',
+    )
+
+    # Auxiliary iterator
+    aux_itr = epoch_aux_itr.next_epoch_itr(
+        fix_batches_to_gpus=args.fix_batches_to_gpus)
+
+    extra_meters = collections.defaultdict(lambda: AverageMeter())
+    first_valid = args.valid_subset.split(',')[0]
+    max_update = args.max_update or math.inf
+    for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
+        # Record gradients from auxiliary data
+        aux_samples = next(aux_itr)
+        trainer.train_step(aux_samples, dummy_batch=True)
+        # if hasattr(trainer.optimizer, "save_constraints"):
+        trainer.optimizer.save_constraints()
+
+        log_output = trainer.train_step(samples)
+        if log_output is None:
+            continue
+
+        # log mid-epoch stats
+        stats = get_training_stats(trainer)
+        for k, v in log_output.items():
+            if k in ['loss', 'nll_loss', 'ntokens', 'nsentences', 'sample_size']:
+                continue  # these are already logged above
+            if 'loss' in k:
+                extra_meters[k].update(v, log_output['sample_size'])
+            else:
+                extra_meters[k].update(v)
+            stats[k] = extra_meters[k].avg
+        progress.log(stats)
+
+        # ignore the first mini-batch in words-per-second calculation
+        if i == 0:
+            trainer.get_meter('wps').reset()
+
+        num_updates = trainer.get_num_updates()
+        if args.save_interval_updates > 0 and num_updates % args.save_interval_updates == 0 and num_updates > 0:
+            valid_losses = validate(
+                args, trainer, task, epoch_itr, [first_valid])
+            save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
+
+        if num_updates >= max_update:
+            break
+
+    # log end-of-epoch stats
+    stats = get_training_stats(trainer)
+    for k, meter in extra_meters.items():
+        stats[k] = meter.avg
+    progress.print(stats)
+
+    # reset training meters
+    for k in [
+        'train_loss', 'train_nll_loss', 'wps', 'ups', 'wpb', 'bsz', 'gnorm', 'clip',
+    ]:
+        meter = trainer.get_meter(k)
+        if meter is not None:
+            meter.reset()
+
+
 if __name__ == '__main__':
     parser = options.get_training_parser()
     args = options.parse_args_and_arch(parser)
 
     if args.distributed_port > 0 or args.distributed_init_method is not None:
+        raise NotImplementedError(
+            "Multitask doesn't support multiprocessing yet")
         from distributed_train import main as distributed_main
 
         distributed_main(args)
     elif args.distributed_world_size > 1:
+        raise NotImplementedError(
+            "Multitask doesn't support multiprocessing yet")
         from multiprocessing_train import main as multiprocessing_main
 
         multiprocessing_main(args)

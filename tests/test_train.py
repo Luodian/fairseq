@@ -40,9 +40,11 @@ def mock_dict():
 
 def get_trainer_and_epoch_itr(epoch, epoch_size, num_updates, iterations_in_epoch):
     tokens = torch.LongTensor(list(range(epoch_size)))
-    tokens_ds = data.TokenBlockDataset(tokens, sizes=[len(tokens)], block_size=1, pad=0, eos=1, include_targets=False)
+    tokens_ds = data.TokenBlockDataset(
+        tokens, sizes=[len(tokens)], block_size=1, pad=0, eos=1, include_targets=False)
     trainer = mock_trainer(epoch, num_updates, iterations_in_epoch)
-    dataset = data.LanguagePairDataset(tokens_ds, tokens_ds.sizes, mock_dict(), shuffle=False)
+    dataset = data.LanguagePairDataset(
+        tokens_ds, tokens_ds.sizes, mock_dict(), shuffle=False)
     epoch_itr = data.EpochBatchIterator(
         dataset=dataset,
         collate_fn=dataset.collater,
@@ -64,7 +66,6 @@ class TestLoadCheckpoint(unittest.TestCase):
         self.applied_patches = [patch(p, d) for p, d in self.patches.items()]
         [p.start() for p in self.applied_patches]
 
-
     def test_load_partial_checkpoint(self):
         with contextlib.redirect_stdout(StringIO()):
             trainer, epoch_itr = get_trainer_and_epoch_itr(2, 150, 200, 50)
@@ -77,7 +78,8 @@ class TestLoadCheckpoint(unittest.TestCase):
             self.assertEqual(epoch_itr.epoch, 2)
             self.assertEqual(epoch_itr.iterations_in_epoch, 50)
 
-            self.assertEqual(next(itr)['net_input']['src_tokens'][0].item(), 50)
+            self.assertEqual(next(itr)['net_input']
+                             ['src_tokens'][0].item(), 50)
             self.assertEqual(epoch_itr.iterations_in_epoch, 51)
 
     def test_load_full_checkpoint(self):

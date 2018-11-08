@@ -1,5 +1,3 @@
-import torch.optim
-
 from . import FairseqOptimizer, register_optimizer
 
 from multiobj_optim import AvgMultiObjSGD, OrthoMultiObjSGD
