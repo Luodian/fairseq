@@ -1,6 +1,6 @@
 from . import FairseqOptimizer, register_optimizer
 
-from multiobj_optim import AvgMultiObjSGD, OrthoMultiObjSGD
+from .multiobj_optim import AvgMultiObjSGD, OrthoMultiObjSGD
 
 
 @register_optimizer('multiobj_sgd')
