@@ -40,8 +40,10 @@ def main(args):
     # Build model and criterion
     model = task.build_model(args)
     criterion = task.build_criterion(args)
-    print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
-    print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
+    print('| model {}, criterion {}'.format(
+        args.arch, criterion.__class__.__name__))
+    print('| num. model params: {}'.format(sum(p.numel()
+                                               for p in model.parameters())))
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of
@@ -50,7 +52,8 @@ def main(args):
         task.max_positions(),
         model.max_positions(),
     )
-    dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
+    dummy_batch = task.dataset('train').get_dummy_batch(
+        args.max_tokens, max_positions)
 
     # Build trainer
     trainer = Trainer(args, task, model, criterion, dummy_batch)
@@ -90,7 +93,8 @@ def main(args):
         train(args, trainer, task, epoch_itr)
 
         if epoch_itr.epoch % args.validate_interval == 0:
-            valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
+            valid_losses = validate(
+                args, trainer, task, epoch_itr, valid_subsets)
 
         # only use first validation loss to update the learning rate
         lr = trainer.lr_step(epoch_itr.epoch, valid_losses[0])
@@ -112,7 +116,8 @@ def train(args, trainer, task, epoch_itr):
         update_freq = args.update_freq[-1]
 
     # Initialize data iterator
-    itr = epoch_itr.next_epoch_itr(fix_batches_to_gpus=args.fix_batches_to_gpus)
+    itr = epoch_itr.next_epoch_itr(
+        fix_batches_to_gpus=args.fix_batches_to_gpus)
     itr = iterators.GroupedIterator(itr, update_freq)
     progress = progress_bar.build_progress_bar(
         args, itr, epoch_itr.epoch, no_progress_bar='simple',
@@ -144,7 +149,8 @@ def train(args, trainer, task, epoch_itr):
 
         num_updates = trainer.get_num_updates()
         if args.save_interval_updates > 0 and num_updates % args.save_interval_updates == 0 and num_updates > 0:
-            valid_losses = validate(args, trainer, task, epoch_itr, [first_valid])
+            valid_losses = validate(
+                args, trainer, task, epoch_itr, [first_valid])
             save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
 
         if num_updates >= max_update:
@@ -184,7 +190,8 @@ def get_training_stats(trainer):
     stats['clip'] = '{:.0%}'.format(trainer.get_meter('clip').avg)
     stats['oom'] = trainer.get_meter('oom').avg
     if trainer.get_meter('loss_scale') is not None:
-        stats['loss_scale'] = '{:.3f}'.format(trainer.get_meter('loss_scale').avg)
+        stats['loss_scale'] = '{:.3f}'.format(
+            trainer.get_meter('loss_scale').avg)
     stats['wall'] = round(trainer.get_meter('wall').elapsed_time)
     stats['train_wall'] = round(trainer.get_meter('train_wall').sum)
     return stats
@@ -271,18 +278,19 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
 
     checkpoint_conds = collections.OrderedDict()
     checkpoint_conds['checkpoint{}.pt'.format(epoch)] = (
-            end_of_epoch and not args.no_epoch_checkpoints and
-            epoch % args.save_interval == 0
+        end_of_epoch and not args.no_epoch_checkpoints and
+        epoch % args.save_interval == 0
     )
     checkpoint_conds['checkpoint_{}_{}.pt'.format(epoch, updates)] = (
-            not end_of_epoch and args.save_interval_updates > 0 and
-            updates % args.save_interval_updates == 0
+        not end_of_epoch and args.save_interval_updates > 0 and
+        updates % args.save_interval_updates == 0
     )
     checkpoint_conds['checkpoint_best.pt'] = (
-            val_loss is not None and
-            (not hasattr(save_checkpoint, 'best') or val_loss < save_checkpoint.best)
+        val_loss is not None and
+        (not hasattr(save_checkpoint, 'best') or val_loss < save_checkpoint.best)
     )
-    checkpoint_conds['checkpoint_last.pt'] = True  # keep this last so that it's a symlink
+    # keep this last so that it's a symlink
+    checkpoint_conds['checkpoint_last.pt'] = True
 
     prev_best = getattr(save_checkpoint, 'best', val_loss)
     if val_loss is not None:
@@ -293,14 +301,16 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
         'val_loss': val_loss,
     }
 
-    checkpoints = [os.path.join(args.save_dir, fn) for fn, cond in checkpoint_conds.items() if cond]
+    checkpoints = [os.path.join(args.save_dir, fn)
+                   for fn, cond in checkpoint_conds.items() if cond]
     if len(checkpoints) > 0:
         for cp in checkpoints:
             trainer.save_checkpoint(cp, extra_state)
 
     if not end_of_epoch and args.keep_interval_updates > 0:
         # remove old checkpoints; checkpoints are sorted in descending order
-        checkpoints = utils.checkpoint_paths(args.save_dir, pattern=r'checkpoint_\d+_(\d+)\.pt')
+        checkpoints = utils.checkpoint_paths(
+            args.save_dir, pattern=r'checkpoint_\d+_(\d+)\.pt')
         for old_chk in checkpoints[args.keep_interval_updates:]:
             os.remove(old_chk)
 
@@ -312,7 +322,7 @@ def load_checkpoint(args, trainer, epoch_itr):
     if os.path.isfile(checkpoint_path):
         extra_state = trainer.load_checkpoint(checkpoint_path, args.reset_optimizer, args.reset_lr_scheduler,
                                               eval(args.optimizer_overrides))
-        if extra_state is not None:
+        if extra_state is not None and not args.reset_optimizer:
             # replay train iterator to match checkpoint
             epoch_itr.load_state_dict(extra_state['train_iterator'])
 
