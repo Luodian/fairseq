@@ -11,9 +11,15 @@ class MultiObjSGD(FairseqOptimizer):
         if name == "avg":
             self._optimizer = AvgMultiObjSGD(params, **self.optimizer_config)
         elif name == "ortho":
+            self.optimizer_config["normalize_constraint"] = True
             self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
         else:
             ValueError(f"Unknown optimizer {name}")
+    
+    @staticmethod
+    def add_args(parser):
+        """Add optimizer-specific arguments to the parser."""
+        parser.add_argument('--multiobj-optim-name', default='avg', metavar='NAME')
 
     def save_constraints(self):
         self.optimizer.save_constraints()

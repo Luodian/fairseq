@@ -101,7 +101,8 @@ class MultiObjSGD(Optimizer):
 class AvgMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
-        return 0.5 * (c_p + g_p)
+        avg_p = 0.5 * (c_p + g_p)
+        return avg_p
 
 
 class OrthoMultiObjSGD(MultiObjSGD):

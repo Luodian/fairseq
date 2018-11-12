@@ -66,6 +66,7 @@ class MultiTaskTranslationTask(FairseqTask):
         Args:
             args (argparse.Namespace): parsed command-line arguments
         """
+        print("Setup multitask")
         args.left_pad_source = options.eval_bool(args.left_pad_source)
         args.left_pad_target = options.eval_bool(args.left_pad_target)
 
@@ -92,6 +93,7 @@ class MultiTaskTranslationTask(FairseqTask):
         Args:
             split (str): name of the split (e.g., train, valid, test)
         """
+        print("Load multitask data")
 
         def split_exists(split, src, tgt, lang, data_path):
             filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
@@ -114,6 +116,7 @@ class MultiTaskTranslationTask(FairseqTask):
         data_paths = self.args.data
 
         for dk, data_path in enumerate(data_paths):
+            print(f"loading {data_path}")
             for k in itertools.count():
                 split_k = split + (str(k) if k > 0 else '')
 
@@ -149,7 +152,7 @@ class MultiTaskTranslationTask(FairseqTask):
                 max_target_positions=self.args.max_target_positions,
             )
             for src_dataset, tgt_dataset
-            in zip(src_datasetss, tgt_datasets)
+            in zip(src_datasets, tgt_datasets)
         ]
 
 
@@ -166,7 +169,7 @@ class MultiTaskTranslationTask(FairseqTask):
         from fairseq.data import FairseqDataset
         if split not in self.datasets:
             raise KeyError('Dataset not loaded: ' + split)
-        if not isinstance(self.datasets[split], FairseqDataset):
+        if not isinstance(self.datasets[split][idx], FairseqDataset):
             raise TypeError('Datasets are expected to be of type FairseqDataset')
         if idx < 0 or idx >= len(self.args.data):
             raise ValueError(f'Invalid dataset idx: {idx}')

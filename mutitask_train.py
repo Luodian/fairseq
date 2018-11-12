@@ -35,7 +35,7 @@ def main(args):
     # Build model and criterion
     model = task.build_model(args)
     criterion = task.build_criterion(args)
-    print('| model {}, criterion {}'.format(
+    print('| model {}, criterion {},'.format(
         args.arch, criterion.__class__.__name__))
     print('| num. model params: {}'.format(sum(p.numel()
                                                for p in model.parameters())))
@@ -57,6 +57,7 @@ def main(args):
         args.max_tokens,
         args.max_sentences,
     ))
+    print('| Optimizer {}'.format(trainer.optimizer.__class__.__name__))
 
     # Initialize dataloader
     epoch_itr = task.get_batch_iterator(
@@ -134,6 +135,7 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
     # Auxiliary iterator
     aux_itr = epoch_aux_itr.next_epoch_itr(
         fix_batches_to_gpus=args.fix_batches_to_gpus)
+    aux_itr = iterators.GroupedIterator(aux_itr, update_freq)
 
     extra_meters = collections.defaultdict(lambda: AverageMeter())
     first_valid = args.valid_subset.split(',')[0]
@@ -141,7 +143,7 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Record gradients from auxiliary data
         aux_samples = next(aux_itr)
-        trainer.train_step(aux_samples, dummy_batch=True)
+        trainer.train_step(aux_samples, update_params=False)
         # if hasattr(trainer.optimizer, "save_constraints"):
         trainer.optimizer.save_constraints()
 
