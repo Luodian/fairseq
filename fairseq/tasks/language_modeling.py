@@ -25,14 +25,15 @@ class LanguageModelingTask(FairseqTask):
     Train a language model.
 
     Args:
-        dictionary (Dictionary): the dictionary for the  input of the language model
-
-        output_dictionary (Dictionary): the dictionary for the output of the language model.
-        In most cases it will be the same as dictionary, but could possibly be a more limited
-        version of the dictionary (if --output-dictionary-size is used).
-
-        targets (List[str]): list of the target types that the language model should predict.
-        Can be one of "self", "future", and "past". Defaults to "future".
+        dictionary (~fairseq.data.Dictionary): the dictionary for the input of
+            the language model
+        output_dictionary (~fairseq.data.Dictionary): the dictionary for the
+            output of the language model. In most cases it will be the same as
+            *dictionary*, but could possibly be a more limited version of the
+            dictionary (if ``--output-dictionary-size`` is used).
+        targets (List[str]): list of the target types that the language model
+            should predict.  Can be one of "self", "future", and "past".
+            Defaults to "future".
 
     .. note::
 
@@ -87,11 +88,14 @@ class LanguageModelingTask(FairseqTask):
         Args:
             args (argparse.Namespace): parsed command-line arguments
         """
-        dictionary = Dictionary.load(os.path.join(args.data, 'dict.txt'))
-        print('| dictionary: {} types'.format(len(dictionary)))
-        output_dictionary = dictionary
-        if args.output_dictionary_size >= 0:
-            output_dictionary = TruncatedDictionary(dictionary, args.output_dictionary_size)
+        dictionary = None
+        output_dictionary = None
+        if args.data:
+            dictionary = Dictionary.load(os.path.join(args.data, 'dict.txt'))
+            print('| dictionary: {} types'.format(len(dictionary)))
+            output_dictionary = dictionary
+            if args.output_dictionary_size >= 0:
+                output_dictionary = TruncatedDictionary(dictionary, args.output_dictionary_size)
 
         # upgrade old checkpoints
         if hasattr(args, 'exclude_self_target'):

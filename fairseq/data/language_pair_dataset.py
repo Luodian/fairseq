@@ -55,13 +55,13 @@ def collate(
 
     batch = {
         'id': id,
+        'nsentences': len(samples),
         'ntokens': ntokens,
         'net_input': {
             'src_tokens': src_tokens,
             'src_lengths': src_lengths,
         },
         'target': target,
-        'nsentences': samples[0]['source'].size(0),
     }
     if prev_output_tokens is not None:
         batch['net_input']['prev_output_tokens'] = prev_output_tokens
@@ -192,7 +192,7 @@ class LanguagePairDataset(FairseqDataset):
             max_positions,
             (self.max_source_positions, self.max_target_positions),
         )
-        bsz = num_tokens // max(src_len, tgt_len)
+        bsz = max(num_tokens // max(src_len, tgt_len), 1)
         return self.collater([
             {
                 'id': i,
