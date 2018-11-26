@@ -143,7 +143,7 @@ class Trainer(object):
 
         return extra_state
 
-    def train_step(self, samples, dummy_batch=False):
+    def train_step(self, samples, dummy_batch=False, update_params=True):
         """Do forward, backward and parameter update."""
         # Set seed based on args.seed and the update number so that we get
         # reproducible results when resuming from checkpoints
@@ -233,29 +233,30 @@ class Trainer(object):
 
             # clip grads
             grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
+            
+            if update_params:
+                # take an optimization step
+                self.optimizer.step()
+                self._num_updates += 1
 
-            # take an optimization step
-            self.optimizer.step()
-            self._num_updates += 1
+                # update learning rate
+                self.lr_scheduler.step_update(self._num_updates)
 
-            # update learning rate
-            self.lr_scheduler.step_update(self._num_updates)
-
-            # update meters
-            ntokens = logging_output.get('ntokens', 0)
-            nsentences = logging_output.get('nsentences', 0)
-            self.meters['wps'].update(ntokens)
-            self.meters['ups'].update(1.)
-            self.meters['wpb'].update(ntokens)
-            self.meters['bsz'].update(nsentences)
-            self.meters['gnorm'].update(grad_norm)
-            self.meters['clip'].update(
-                1. if grad_norm > self.args.clip_norm and self.args.clip_norm > 0 else 0.
-            )
-            self.meters['oom'].update(ooms)
-            self.meters['train_loss'].update(logging_output.get('loss', 0), sample_size)
-            if 'nll_loss' in logging_output:
-                self.meters['train_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+                # update meters
+                ntokens = logging_output.get('ntokens', 0)
+                nsentences = logging_output.get('nsentences', 0)
+                self.meters['wps'].update(ntokens)
+                self.meters['ups'].update(1.)
+                self.meters['wpb'].update(ntokens)
+                self.meters['bsz'].update(nsentences)
+                self.meters['gnorm'].update(grad_norm)
+                self.meters['clip'].update(
+                    1. if grad_norm > self.args.clip_norm and self.args.clip_norm > 0 else 0.
+                )
+                self.meters['oom'].update(ooms)
+                self.meters['train_loss'].update(logging_output.get('loss', 0), sample_size)
+                if 'nll_loss' in logging_output:
+                    self.meters['train_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
         except OverflowError as e:
             print('| WARNING: overflow detected, ' + str(e))
             self.zero_grad()
