@@ -1,10 +1,15 @@
 from . import FairseqOptimizer, register_optimizer
 
-from .multiobj_optim import AvgMultiObjSGD, OrthoMultiObjSGD
+from .multiobj_optim import (
+    AvgMultiObjSGD,
+    OrthoMultiObjSGD,
+    MultiObjSGD,
+    CwiseOrthoMultiObjSGD,
+)
 
 
 @register_optimizer('multiobj_sgd')
-class MultiObjSGD(FairseqOptimizer):
+class FairseqMultiObjSGD(FairseqOptimizer):
     def __init__(self, args, params):
         super().__init__(args, params)
         name = getattr(args, "multiobj_optim_name", "avg")
@@ -13,6 +18,10 @@ class MultiObjSGD(FairseqOptimizer):
         elif name == "ortho":
             self.optimizer_config["normalize_constraint"] = True
             self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
+        elif name == "cwise-ortho":
+            self._optimizer = CwiseOrthoMultiObjSGD(params, **self.optimizer_config)
+        elif name == "single":
+            self._optimizer = MultiObjSGD(params, **self.optimizer_config)
         else:
             ValueError(f"Unknown optimizer {name}")
     

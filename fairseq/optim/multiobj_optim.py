@@ -48,7 +48,7 @@ class MultiObjSGD(Optimizer):
                 else:
                     param_state["constraint_normal"].add_(d_p)
 
-    def apply_constraints(self, g_p, c_p):
+    def apply_constraint(self, g_p, c_p):
         return g_p
 
     def step(self, closure=None):
@@ -115,6 +115,14 @@ class OrthoMultiObjSGD(MultiObjSGD):
         else:
             # Otherwise project
             return g_p - dot * c_p
+
+
+class CwiseOrthoMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        mask = torch.nn.functional.relu(torch.sign(g_p * c_p))
+        return mask * g_p
+
 
 
 def build_optimizer(name, params, **kwargs):
