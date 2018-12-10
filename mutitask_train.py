@@ -33,15 +33,7 @@ def main(args):
     load_dataset_splits(task, ['train', 'valid'])
 
     # Build model and criterion
-    #args.freeze_embeddings = True
-    #args.freeze_decoder = True
     model = task.build_model(args)
-    # Freeze embeddings
-    #for p in model.encoder.parameters():
-    #    p.require_grad = True
-    #model.encoder.embed_tokens.require_grad = False
-    #for p in model.decoder.parameters():
-    #    p.require_grad = False
     criterion = task.build_criterion(args)
     print('| model {}, criterion {},'.format(
         args.arch, criterion.__class__.__name__))
@@ -60,8 +52,20 @@ def main(args):
 
     # Build trainer
     trainer = Trainer(args, task, model, criterion, dummy_batch)
-    for p in trainer.model.decoder.parameters():
-        trainer.optimizer._optimizer.state[p]["frozen"] = True
+
+    if args.freeze_decoder:
+        print('| Freezing decoder weight')
+        for p in trainer.model.decoder.parameters():
+            trainer.optimizer._optimizer.state[p]["frozen"] = True
+    if args.freeze_embeddings:
+        print('| Freezing embedding layers')
+        # Freeze source embeddings
+        src_embeds = trainer.model.encoder.embed_tokens.weights
+        trainer.optimizer._optimizer.state[src_embeds]["frozen"] = True
+        # Freeze target embeddings
+        tgt_embeds = trainer.model.decoder.embed_tokens.weights
+        trainer.optimizer._optimizer.state[tgt_embeds]["frozen"] = True
+
     print('| training on {} GPUs'.format(args.distributed_world_size))
     print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
         args.max_tokens,
@@ -145,7 +149,8 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
     # Auxiliary iterator
     aux_itr = epoch_aux_itr.next_epoch_itr(
         fix_batches_to_gpus=args.fix_batches_to_gpus)
-    aux_itr = iterators.GroupedIterator(aux_itr, update_freq)
+    aux_itr = iterators.GroupedIterator(
+        aux_itr, update_freq, restart_when_done=True)
 
     extra_meters = collections.defaultdict(lambda: AverageMeter())
     first_valid = args.valid_subset.split(',')[0]
@@ -201,8 +206,17 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
             meter.reset()
 
 
+def add_multitask_args(parser):
+    mtt_group = parser.add_argument_group("Multitask related arguments")
+    mtt_group.add_argument("--freeze-embeddings", action="store_true",
+                           help="Freeze word embeddings when finetuning")
+    mtt_group.add_argument("--freeze-decoder", action="store_true",
+                           help="Freeze decoder when finetuning")
+
+
 if __name__ == '__main__':
     parser = options.get_training_parser()
+    add_multitask_args(parser)
     args = options.parse_args_and_arch(parser)
 
     if args.distributed_port > 0 or args.distributed_init_method is not None:

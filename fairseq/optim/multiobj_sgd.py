@@ -14,25 +14,28 @@ class FairseqMultiObjSGD(FairseqOptimizer):
     def __init__(self, args, params):
         super().__init__(args, params)
         name = getattr(args, "multiobj_optim_name", "avg")
+        self.optimizer_config["always_project"] = args.always_project
         if name == "avg":
             self._optimizer = AvgMultiObjSGD(params, **self.optimizer_config)
         elif name == "ortho":
-            self.optimizer_config["normalize_constraint"] = False
             self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
         elif name == "full-ortho":
-            self.optimizer_config["normalize_constraint"] = False
-            self._optimizer = FullOrthoMultiObjSGD(params, **self.optimizer_config)
+            self._optimizer = FullOrthoMultiObjSGD(
+                params, **self.optimizer_config)
         elif name == "cwise-ortho":
-            self._optimizer = CwiseOrthoMultiObjSGD(params, **self.optimizer_config)
+            self._optimizer = CwiseOrthoMultiObjSGD(
+                params, **self.optimizer_config)
         elif name == "single":
             self._optimizer = MultiObjSGD(params, **self.optimizer_config)
         else:
-            ValueError(f"Unknown optimizer {name}")
-    
+            raise ValueError(f"Unknown optimizer {name}")
+
     @staticmethod
     def add_args(parser):
         """Add optimizer-specific arguments to the parser."""
-        parser.add_argument('--multiobj-optim-name', default='avg', metavar='NAME')
+        parser.add_argument('--multiobj-optim-name',
+                            default='avg', metavar='NAME')
+        parser.add_argument('--always-project', action="store_true")
 
     def save_constraints(self):
         self.optimizer.save_constraints()

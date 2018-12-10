@@ -1,10 +1,9 @@
 import itertools
-import numpy as np
 import os
 
 from fairseq import options
 from fairseq.data import (
-    data_utils, Dictionary, LanguagePairDataset, ConcatDataset,
+    data_utils, Dictionary, LanguagePairDataset,
     IndexedRawTextDataset, IndexedCachedDataset, IndexedDataset
 )
 
@@ -36,7 +35,8 @@ class MultiTaskTranslationTask(FairseqTask):
     @staticmethod
     def add_args(parser):
         """Add task-specific arguments to the parser."""
-        parser.add_argument('data', nargs='+', help='path(s) to data directorie(s)')
+        parser.add_argument('data', nargs='+',
+                            help='path(s) to data directorie(s)')
         parser.add_argument('-s', '--source-lang', default=None, metavar='SRC',
                             help='source language')
         parser.add_argument('-t', '--target-lang', default=None, metavar='TARGET',
@@ -72,18 +72,24 @@ class MultiTaskTranslationTask(FairseqTask):
 
         # find language pair automatically
         if args.source_lang is None or args.target_lang is None:
-            args.source_lang, args.target_lang = data_utils.infer_language_pair(args.data[0])
+            args.source_lang, args.target_lang = data_utils.infer_language_pair(
+                args.data[0])
         if args.source_lang is None or args.target_lang is None:
-            raise Exception('Could not infer language pair, please provide it explicitly')
+            raise Exception(
+                'Could not infer language pair, please provide it explicitly')
 
         # load dictionaries
-        src_dict = Dictionary.load(os.path.join(args.data[0], 'dict.{}.txt'.format(args.source_lang)))
-        tgt_dict = Dictionary.load(os.path.join(args.data[0], 'dict.{}.txt'.format(args.target_lang)))
+        src_dict = Dictionary.load(os.path.join(
+            args.data[0], 'dict.{}.txt'.format(args.source_lang)))
+        tgt_dict = Dictionary.load(os.path.join(
+            args.data[0], 'dict.{}.txt'.format(args.target_lang)))
         assert src_dict.pad() == tgt_dict.pad()
         assert src_dict.eos() == tgt_dict.eos()
         assert src_dict.unk() == tgt_dict.unk()
-        print('| [{}] dictionary: {} types'.format(args.source_lang, len(src_dict)))
-        print('| [{}] dictionary: {} types'.format(args.target_lang, len(tgt_dict)))
+        print('| [{}] dictionary: {} types'.format(
+            args.source_lang, len(src_dict)))
+        print('| [{}] dictionary: {} types'.format(
+            args.target_lang, len(tgt_dict)))
 
         return cls(args, src_dict, tgt_dict)
 
@@ -96,7 +102,8 @@ class MultiTaskTranslationTask(FairseqTask):
         print("Load multitask data")
 
         def split_exists(split, src, tgt, lang, data_path):
-            filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
+            filename = os.path.join(
+                data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
             if self.args.raw_text and IndexedRawTextDataset.exists(filename):
                 return True
             elif not self.args.raw_text and IndexedDataset.exists(filename):
@@ -123,19 +130,25 @@ class MultiTaskTranslationTask(FairseqTask):
                 # infer langcode
                 src, tgt = self.args.source_lang, self.args.target_lang
                 if split_exists(split_k, src, tgt, src, data_path):
-                    prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, src, tgt))
+                    prefix = os.path.join(
+                        data_path, '{}.{}-{}.'.format(split_k, src, tgt))
                 elif split_exists(split_k, tgt, src, src, data_path):
-                    prefix = os.path.join(data_path, '{}.{}-{}.'.format(split_k, tgt, src))
+                    prefix = os.path.join(
+                        data_path, '{}.{}-{}.'.format(split_k, tgt, src))
                 else:
                     if k > 0 or dk > 0:
                         break
                     else:
-                        raise FileNotFoundError('Dataset not found: {} ({})'.format(split, data_path))
+                        raise FileNotFoundError(
+                            'Dataset not found: {} ({})'.format(split, data_path))
 
-                src_datasets.append(indexed_dataset(prefix + src, self.src_dict))
-                tgt_datasets.append(indexed_dataset(prefix + tgt, self.tgt_dict))
+                src_datasets.append(indexed_dataset(
+                    prefix + src, self.src_dict))
+                tgt_datasets.append(indexed_dataset(
+                    prefix + tgt, self.tgt_dict))
 
-                print('| {} {} {} examples'.format(data_path, split_k, len(src_datasets[-1])))
+                print('| {} {} {} examples'.format(
+                    data_path, split_k, len(src_datasets[-1])))
 
                 if not combine:
                     break
@@ -155,7 +168,6 @@ class MultiTaskTranslationTask(FairseqTask):
             in zip(src_datasets, tgt_datasets)
         ]
 
-
     def dataset(self, split, idx=0):
         """
         Return a loaded dataset split.
@@ -170,12 +182,11 @@ class MultiTaskTranslationTask(FairseqTask):
         if split not in self.datasets:
             raise KeyError('Dataset not loaded: ' + split)
         if not isinstance(self.datasets[split][idx], FairseqDataset):
-            raise TypeError('Datasets are expected to be of type FairseqDataset')
+            raise TypeError(
+                'Datasets are expected to be of type FairseqDataset')
         if idx < 0 or idx >= len(self.args.data):
             raise ValueError(f'Invalid dataset idx: {idx}')
         return self.datasets[split][idx]
-
-
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""

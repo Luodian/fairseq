@@ -68,8 +68,8 @@ class Trainer(object):
         if args.fp16:
             self.meters['loss_scale'] = AverageMeter()  # dynamic loss scale
         self.meters['wall'] = TimeMeter()      # wall time in seconds
-        self.meters['train_wall'] = StopwatchMeter()  # train wall time in seconds
-
+        # train wall time in seconds
+        self.meters['train_wall'] = StopwatchMeter()
 
     @property
     def model(self):
@@ -93,15 +93,19 @@ class Trainer(object):
             if torch.cuda.get_device_capability(0)[0] < 7:
                 print('| WARNING: your device does NOT support faster training with --fp16, '
                       'please switch to FP32 which is likely to be faster')
-            params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
-            self._optimizer = optim.FP16Optimizer.build_optimizer(self.args, params)
+            params = list(filter(lambda p: p.requires_grad,
+                                 self.model.parameters()))
+            self._optimizer = optim.FP16Optimizer.build_optimizer(
+                self.args, params)
         else:
             if torch.cuda.get_device_capability(0)[0] >= 7:
                 print('| NOTICE: your device may support faster training with --fp16')
-            params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
+            params = list(filter(lambda p: p.requires_grad,
+                                 self.model.parameters()))
             self._optimizer = optim.build_optimizer(self.args, params)
 
-        self.lr_scheduler = lr_scheduler.build_lr_scheduler(self.args, self._optimizer)
+        self.lr_scheduler = lr_scheduler.build_lr_scheduler(
+            self.args, self._optimizer)
 
     def save_checkpoint(self, filename, extra_state):
         """Save all training state in a checkpoint file."""
@@ -128,8 +132,10 @@ class Trainer(object):
                 'optimizer does not match; please reset the optimizer (--reset-optimizer)'
 
             if not reset_lr_scheduler:
-                self.lr_scheduler.load_state_dict(last_optim['lr_scheduler_state'])
-            self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
+                self.lr_scheduler.load_state_dict(
+                    last_optim['lr_scheduler_state'])
+            self.optimizer.load_state_dict(
+                last_optim_state, optimizer_overrides)
 
             self._num_updates = last_optim['num_updates']
 
@@ -230,11 +236,12 @@ class Trainer(object):
 
         try:
             # normalize grads by sample size
-            self.optimizer.multiply_grads(self.args.distributed_world_size / float(sample_size))
+            self.optimizer.multiply_grads(
+                self.args.distributed_world_size / float(sample_size))
 
             # clip grads
             grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
-            
+
             if update_params:
                 # take an optimization step
                 self.optimizer.step()
@@ -255,9 +262,11 @@ class Trainer(object):
                     1. if grad_norm > self.args.clip_norm and self.args.clip_norm > 0 else 0.
                 )
                 self.meters['oom'].update(ooms)
-                self.meters['train_loss'].update(logging_output.get('loss', 0), sample_size)
+                self.meters['train_loss'].update(
+                    logging_output.get('loss', 0), sample_size)
                 if 'nll_loss' in logging_output:
-                    self.meters['train_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+                    self.meters['train_nll_loss'].update(
+                        logging_output.get('nll_loss', 0), ntokens)
         except OverflowError as e:
             print('| WARNING: overflow detected, ' + str(e))
             self.zero_grad()
@@ -322,9 +331,11 @@ class Trainer(object):
 
         # update meters for validation
         ntokens = logging_output.get('ntokens', 0)
-        self.meters['valid_loss'].update(logging_output.get('loss', 0), sample_size)
+        self.meters['valid_loss'].update(
+            logging_output.get('loss', 0), sample_size)
         if 'nll_loss' in logging_output:
-            self.meters['valid_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+            self.meters['valid_nll_loss'].update(
+                logging_output.get('nll_loss', 0), ntokens)
 
         return logging_output
 

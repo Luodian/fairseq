@@ -139,7 +139,8 @@ class EpochBatchIterator(object):
         itr_pos = state_dict.get('iterations_in_epoch', 0)
         if itr_pos > 0:
             # fast-forward epoch iterator
-            itr = self._get_iterator_for_epoch(self.epoch, state_dict.get('shuffle', True))
+            itr = self._get_iterator_for_epoch(
+                self.epoch, state_dict.get('shuffle', True))
             if itr_pos < len(itr):
                 self._next_epoch_itr = itr.skip(itr_pos)
 
@@ -163,14 +164,17 @@ class EpochBatchIterator(object):
             self.dataset.prefetch([i for s in batches for i in s])
 
             if shuffle and fix_batches_to_gpus:
-                batches = shuffle_batches(batches, self.seed + epoch + self.shard_id)
+                batches = shuffle_batches(
+                    batches, self.seed + epoch + self.shard_id)
 
         else:
             if shuffle:
-                batches = shuffle_batches(list(self.frozen_batches), self.seed + epoch)
+                batches = shuffle_batches(
+                    list(self.frozen_batches), self.seed + epoch)
             else:
                 batches = self.frozen_batches
-            batches = ShardedIterator(batches, self.num_shards, self.shard_id, fill_value=[])
+            batches = ShardedIterator(
+                batches, self.num_shards, self.shard_id, fill_value=[])
 
         return CountingIterator(torch.utils.data.DataLoader(
             self.dataset,
@@ -187,10 +191,12 @@ class GroupedIterator(object):
         chunk_size (int): size of each chunk
     """
 
-    def __init__(self, iterable, chunk_size):
+    def __init__(self, iterable, chunk_size, restart_when_done=False):
         self._len = int(math.ceil(len(iterable) / float(chunk_size)))
+        self.iterable = iterable
         self.itr = iter(iterable)
         self.chunk_size = chunk_size
+        self.restart_when_done = restart_when_done
 
     def __len__(self):
         return self._len
@@ -205,7 +211,10 @@ class GroupedIterator(object):
                 chunk.append(next(self.itr))
         except StopIteration as e:
             if len(chunk) == 0:
-                raise e
+                if self.restart_when_done:
+                    self.itr = iter(self.iterable)
+                else:
+                    raise e
         return chunk
 
 
