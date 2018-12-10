@@ -22,7 +22,7 @@ class MultiObjSGD(Optimizer):
 
         defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
                         weight_decay=weight_decay, nesterov=nesterov,
-                        normalize_constraint=normalize_constraint)
+                        normalize_constraint=normalize_constraint, frozen=False)
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError(
                 "Nesterov momentum requires a momentum and zero dampening")
@@ -38,11 +38,13 @@ class MultiObjSGD(Optimizer):
         for group in self.param_groups:
             normalize_constraint = group["normalize_constraint"]
             for p in group["params"]:
+                param_state = self.state[p]
+                if getattr(param_state, "frozen", False):
+                    continue
+                param_state["constraint_normal"] = torch.zeros_like(p.data)
                 if p.grad is None:
                     continue
                 d_p = p.grad.data
-                param_state = self.state[p]
-                param_state["constraint_normal"] = torch.zeros_like(p.data)
                 if normalize_constraint:
                     param_state["constraint_normal"].add_(normalize_param(d_p))
                 else:
@@ -76,6 +78,8 @@ class MultiObjSGD(Optimizer):
                     d_p.add_(weight_decay, p.data)
 
                 param_state = self.state[p]
+                if getattr(param_state, "frozen", False):
+                    continue
                 if momentum != 0:
                     if "momentum_buffer" not in param_state:
                         buf = param_state["momentum_buffer"] = torch.zeros_like(
@@ -108,13 +112,90 @@ class AvgMultiObjSGD(MultiObjSGD):
 class OrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
-        dot = (g_p * c_p).sum()
-        if dot.data > 0:
+        g_norm = (g_p.norm(2)+1e-10)
+        c_norm = c_p.norm(2)+1e-10
+        cosine = ((g_p/g_norm) * (c_p/c_norm)).sum()
+        if False and cosine.data > 0:
             # If the two are somewhat aligned, no need to project
             return g_p
         else:
             # Otherwise project
-            return g_p - dot * c_p
+            return 0.5* (g_p+c_p) - 0.5 * cosine * (g_norm * c_p + c_norm * g_p)
+
+class FullOrthoMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p, dot_val):
+        if False and dot_val > 0:
+            # If the two are somewhat aligned, no need to project
+            return g_p
+        else:
+            # Otherwise project
+            return g_p - dot_val * c_p
+
+    def compute_dot(self):
+        dot_val = 0
+        constraint_norm = 0
+        for group in self.param_groups:
+            
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                d_p = p.grad.data
+
+                param_state = self.state[p]
+                constraint_norm += (param_state["constraint_normal"] * param_state["constraint_normal"]).sum().data
+                dot_val += (d_p * param_state["constraint_normal"]).sum().data
+        dot_val = dot_val / (constraint_norm + 1e-20)
+        return dot_val
+
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        dot_val = self.compute_dot()
+
+        for group in self.param_groups:
+            weight_decay = group["weight_decay"]
+            momentum = group["momentum"]
+            dampening = group["dampening"]
+            nesterov = group["nesterov"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                d_p = p.grad.data
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+
+                param_state = self.state[p]
+                if momentum != 0:
+                    if "momentum_buffer" not in param_state:
+                        buf = param_state["momentum_buffer"] = torch.zeros_like(
+                            p.data)
+                        buf.mul_(momentum).add_(d_p)
+                    else:
+                        buf = param_state["momentum_buffer"]
+                        buf.mul_(momentum).add_(1 - dampening, d_p)
+                    if nesterov:
+                        d_p = d_p.add(momentum, buf)
+                    else:
+                        d_p = buf
+
+                if "constraint_normal" in param_state:
+                    d_p = self.apply_constraint(
+                        d_p, param_state["constraint_normal"], dot_val)
+
+                p.data.add_(-group["lr"], d_p)
+
+        return loss
 
 
 class CwiseOrthoMultiObjSGD(MultiObjSGD):

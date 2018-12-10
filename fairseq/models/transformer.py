@@ -108,6 +108,9 @@ class TransformerModel(FairseqModel):
 
         src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
 
+        freeze_embeddings = getattr(args, "freeze_embeddings", False)
+        freeze_decoder = getattr(args, "freeze_embeddings", False)
+
         def build_embedding(dictionary, embed_dim, path=None):
             num_embeddings = len(dictionary)
             padding_idx = dictionary.pad()
@@ -116,6 +119,8 @@ class TransformerModel(FairseqModel):
             if path:
                 embed_dict = utils.parse_embedding(path)
                 utils.load_embedding(embed_dict, dictionary, emb)
+            if freeze_embeddings:
+                emb.weight.require_grad = False
             return emb
 
         if args.share_all_embeddings:
@@ -142,6 +147,9 @@ class TransformerModel(FairseqModel):
 
         encoder = TransformerEncoder(args, src_dict, encoder_embed_tokens)
         decoder = TransformerDecoder(args, tgt_dict, decoder_embed_tokens)
+        if freeze_decoder:
+            for p in encoder.parameters():
+                p.require_grad = False
         return TransformerModel(encoder, decoder)
 
 

@@ -98,7 +98,8 @@ class Trainer(object):
         else:
             if torch.cuda.get_device_capability(0)[0] >= 7:
                 print('| NOTICE: your device may support faster training with --fp16')
-            self._optimizer = optim.build_optimizer(self.args, self.model.parameters())
+            params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
+            self._optimizer = optim.build_optimizer(self.args, params)
 
         self.lr_scheduler = lr_scheduler.build_lr_scheduler(self.args, self._optimizer)
 

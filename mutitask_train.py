@@ -33,7 +33,15 @@ def main(args):
     load_dataset_splits(task, ['train', 'valid'])
 
     # Build model and criterion
+    #args.freeze_embeddings = True
+    #args.freeze_decoder = True
     model = task.build_model(args)
+    # Freeze embeddings
+    #for p in model.encoder.parameters():
+    #    p.require_grad = True
+    #model.encoder.embed_tokens.require_grad = False
+    #for p in model.decoder.parameters():
+    #    p.require_grad = False
     criterion = task.build_criterion(args)
     print('| model {}, criterion {},'.format(
         args.arch, criterion.__class__.__name__))
@@ -52,6 +60,8 @@ def main(args):
 
     # Build trainer
     trainer = Trainer(args, task, model, criterion, dummy_batch)
+    for p in trainer.model.decoder.parameters():
+        trainer.optimizer._optimizer.state[p]["frozen"] = True
     print('| training on {} GPUs'.format(args.distributed_world_size))
     print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
         args.max_tokens,

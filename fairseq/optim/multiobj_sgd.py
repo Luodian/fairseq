@@ -5,6 +5,7 @@ from .multiobj_optim import (
     OrthoMultiObjSGD,
     MultiObjSGD,
     CwiseOrthoMultiObjSGD,
+    FullOrthoMultiObjSGD,
 )
 
 
@@ -16,8 +17,11 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         if name == "avg":
             self._optimizer = AvgMultiObjSGD(params, **self.optimizer_config)
         elif name == "ortho":
-            self.optimizer_config["normalize_constraint"] = True
+            self.optimizer_config["normalize_constraint"] = False
             self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
+        elif name == "full-ortho":
+            self.optimizer_config["normalize_constraint"] = False
+            self._optimizer = FullOrthoMultiObjSGD(params, **self.optimizer_config)
         elif name == "cwise-ortho":
             self._optimizer = CwiseOrthoMultiObjSGD(params, **self.optimizer_config)
         elif name == "single":
