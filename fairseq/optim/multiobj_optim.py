@@ -11,7 +11,7 @@ class MultiObjSGD(Optimizer):
     """
 
     def __init__(self, params, lr=required, momentum=0, dampening=0,
-                 weight_decay=0, nesterov=False, always_project=True):
+                 weight_decay=0, nesterov=False, always_project=True, reverse=False):
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -27,6 +27,7 @@ class MultiObjSGD(Optimizer):
                 "Nesterov momentum requires a momentum and zero dampening")
         super(MultiObjSGD, self).__init__(params, defaults)
         self.always_project = always_project
+        self.reverse = reverse
 
     def __setstate__(self, state):
         super(MultiObjSGD, self).__setstate__(state)
@@ -121,12 +122,17 @@ class OrthoMultiObjSGD(MultiObjSGD):
 class AvgOrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
-        g_norm = (g_p.norm(2)+1e-10)
+        g_norm = g_p.norm(2)+1e-10
         c_norm = c_p.norm(2)+1e-10
+        dot = (g_p * c_p).sum()
         cosine = ((g_p / g_norm) * (c_p / c_norm)).sum()
         norm_ratio = g_norm / c_norm
-        if self.always_project or cosine.data <= 0:
-            return 0.5 * (g_p + c_p) - 0.5 * cosine * (norm_ratio * c_p + (1.0 / norm_ratio) * g_p)
+        if self.always_project or dot.data <= 0:
+            g_unit = g_p / g_norm
+            c_unit = c_p / c_norm
+            g_proj_c = g_p - (g_p * c_unit).sum() * c_unit
+            c_proj_g = c_p - (c_p * g_unit).sum() * g_unit
+            return 0.5 * (g_proj_c + c_proj_g)
         else:
             # If the two are somewhat aligned, no need to project
             return g_p
@@ -135,16 +141,15 @@ class AvgOrthoMultiObjSGD(MultiObjSGD):
 class FullOrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p, dot_val):
-        if False and dot_val > 0:
-            # If the two are somewhat aligned, no need to project
-            return g_p
-        else:
-            # Otherwise project
+        if self.always_project or dot_val <= 0:
             return g_p - dot_val * c_p
+        else:
+            return g_p
+
 
     def compute_dot(self):
         dot_val = 0
-        constraint_norm = 0
+        c_p_norm_squared = 0
         for group in self.param_groups:
 
             for p in group["params"]:
@@ -156,10 +161,10 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
                 # skip frozen parameters
                 if getattr(param_state, "frozen", False):
                     continue
-                constraint_norm += (param_state["constraint"]
-                                    * param_state["constraint"]).sum().data
-                dot_val += (d_p * param_state["constraint"]).sum().data
-        dot_val = dot_val / (constraint_norm + 1e-20)
+                c_p = param_state["constraint"]
+                c_p_norm_squared += (c_p * c_p).sum().data
+                dot_val += (d_p * c_p).sum().data
+        dot_val = dot_val / (c_p_norm_squared + 1e-20)
         return dot_val
 
     def step(self, closure=None):
@@ -213,6 +218,13 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
 
         return loss
 
+class FullNullifyMultiObjSGD(FullOrthoMultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p, dot_val):
+        if dot_val <= 0:
+            return torch.zeros_like(g_p.data)
+        else:
+            return g_p
 
 class CwiseOrthoMultiObjSGD(MultiObjSGD):
 

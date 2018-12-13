@@ -60,10 +60,10 @@ def main(args):
     if args.freeze_embeddings:
         print('| Freezing embedding layers')
         # Freeze source embeddings
-        src_embeds = trainer.model.encoder.embed_tokens.weights
+        src_embeds = trainer.model.encoder.embed_tokens.weight
         trainer.optimizer._optimizer.state[src_embeds]["frozen"] = True
         # Freeze target embeddings
-        tgt_embeds = trainer.model.decoder.embed_tokens.weights
+        tgt_embeds = trainer.model.decoder.embed_tokens.weight
         trainer.optimizer._optimizer.state[tgt_embeds]["frozen"] = True
 
     print('| training on {} GPUs'.format(args.distributed_world_size))

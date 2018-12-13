@@ -3,9 +3,11 @@ from . import FairseqOptimizer, register_optimizer
 from .multiobj_optim import (
     AvgMultiObjSGD,
     OrthoMultiObjSGD,
+    AvgOrthoMultiObjSGD,
     MultiObjSGD,
     CwiseOrthoMultiObjSGD,
     FullOrthoMultiObjSGD,
+    FullNullifyMultiObjSGD,
 )
 
 
@@ -15,12 +17,19 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         super().__init__(args, params)
         name = getattr(args, "multiobj_optim_name", "avg")
         self.optimizer_config["always_project"] = args.always_project
+        self.optimizer_config["reverse"] = args.reverse_constraint
         if name == "avg":
             self._optimizer = AvgMultiObjSGD(params, **self.optimizer_config)
         elif name == "ortho":
             self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
+        elif name == "avg-ortho":
+            self._optimizer = AvgOrthoMultiObjSGD(
+                params, **self.optimizer_config)
         elif name == "full-ortho":
             self._optimizer = FullOrthoMultiObjSGD(
+                params, **self.optimizer_config)
+        elif name == "full-nullify":
+            self._optimizer = FullNullifyMultiObjSGD(
                 params, **self.optimizer_config)
         elif name == "cwise-ortho":
             self._optimizer = CwiseOrthoMultiObjSGD(
@@ -36,6 +45,7 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         parser.add_argument('--multiobj-optim-name',
                             default='avg', metavar='NAME')
         parser.add_argument('--always-project', action="store_true")
+        parser.add_argument('--reverse-constraint', action="store_true")
 
     def save_constraints(self):
         self.optimizer.save_constraints()
