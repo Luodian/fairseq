@@ -6,6 +6,37 @@ def normalize_param(W):
     return W / W.norm(2).clamp(min=1e-12)
 
 
+multiobj_optims = {}
+
+#     "avg": AvgMultiObjSGD,
+#     "ortho": OrthoMultiObjSGD,
+#     "avg-ortho": AvgOrthoMultiObjSGD,
+#     "full-ortho": FullOrthoMultiObjSGD,
+#     "full-nullify": FullNullifyMultiObjSGD,
+#     "cwise-ortho": CwiseOrthoMultiObjSGD,
+#     "single": MultiObjSGD,
+# }
+
+
+def register_multiobj_optim(name):
+    """Decorator to register a new optimizer."""
+
+    def register_multiobj_optim_cls(cls):
+        if name in multiobj_optims:
+            raise ValueError(
+                'Cannot register duplicate optimizer ({})'.format(name))
+        if not issubclass(cls, MultiObjSGD):
+            raise ValueError(
+                'Optimizer ({}: {}) must extend FairseqOptimizer'.format(name, cls.__name__))
+        if cls.__name__ in multiobj_optims.values():
+            # We use the optimizer class name as a unique identifier in
+            # checkpoints, so all optimizer must have unique class names.
+            raise ValueError(
+                'Cannot register optimizer with duplicate class name ({})'.format(cls.__name__))
+        multiobj_optims[name] = cls
+        return cls
+
+
 class MultiObjSGD(Optimizer):
     """
     """
@@ -101,6 +132,7 @@ class MultiObjSGD(Optimizer):
         return loss
 
 
+@register_multiobj_optim("avg")
 class AvgMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
@@ -108,6 +140,7 @@ class AvgMultiObjSGD(MultiObjSGD):
         return avg_p
 
 
+@register_multiobj_optim("ortho")
 class OrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
@@ -119,14 +152,23 @@ class OrthoMultiObjSGD(MultiObjSGD):
             return g_p
 
 
+@register_multiobj_optim("cosine-weighted")
+class CosineWeightedMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        c_unit = c_p / (c_p.norm(2) + 1e-10)
+        g_unit = g_p / (g_p.norm(2) + 1e-10)
+        cosine = (g_unit * c_unit).sum()
+        return torch.nn.functional.relu(cosine) * c_p
+
+
+@register_multiobj_optim("avg-ortho")
 class AvgOrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
         g_norm = g_p.norm(2)+1e-10
         c_norm = c_p.norm(2)+1e-10
         dot = (g_p * c_p).sum()
-        cosine = ((g_p / g_norm) * (c_p / c_norm)).sum()
-        norm_ratio = g_norm / c_norm
         if self.always_project or dot.data <= 0:
             g_unit = g_p / g_norm
             c_unit = c_p / c_norm
@@ -138,6 +180,7 @@ class AvgOrthoMultiObjSGD(MultiObjSGD):
             return g_p
 
 
+@register_multiobj_optim("full-ortho")
 class FullOrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p, dot_val):
@@ -145,7 +188,6 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
             return g_p - dot_val * c_p
         else:
             return g_p
-
 
     def compute_dot(self):
         dot_val = 0
@@ -218,6 +260,8 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
 
         return loss
 
+
+@register_multiobj_optim("full-nullify")
 class FullNullifyMultiObjSGD(FullOrthoMultiObjSGD):
 
     def apply_constraint(self, g_p, c_p, dot_val):
@@ -226,20 +270,10 @@ class FullNullifyMultiObjSGD(FullOrthoMultiObjSGD):
         else:
             return g_p
 
+
+@register_multiobj_optim("cwise-ortho")
 class CwiseOrthoMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
         mask = torch.nn.functional.relu(torch.sign(g_p * c_p))
         return mask * g_p
-
-
-def build_optimizer(name, params, **kwargs):
-    if name == "sgd":
-        return MultiObjSGD(params, **kwargs)
-    elif name == "avg":
-        return AvgMultiObjSGD(params, **kwargs)
-    elif name == "ortho":
-        kwargs["normalize_constraint"] = True
-        return OrthoMultiObjSGD(params, **kwargs)
-    else:
-        ValueError(f"Unknown optimizer {name}")

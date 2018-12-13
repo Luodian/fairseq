@@ -1,14 +1,6 @@
 from . import FairseqOptimizer, register_optimizer
 
-from .multiobj_optim import (
-    AvgMultiObjSGD,
-    OrthoMultiObjSGD,
-    AvgOrthoMultiObjSGD,
-    MultiObjSGD,
-    CwiseOrthoMultiObjSGD,
-    FullOrthoMultiObjSGD,
-    FullNullifyMultiObjSGD,
-)
+from .multiobj_optim import multiobj_optims
 
 
 @register_optimizer('multiobj_sgd')
@@ -18,24 +10,8 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         name = getattr(args, "multiobj_optim_name", "avg")
         self.optimizer_config["always_project"] = args.always_project
         self.optimizer_config["reverse"] = args.reverse_constraint
-        if name == "avg":
-            self._optimizer = AvgMultiObjSGD(params, **self.optimizer_config)
-        elif name == "ortho":
-            self._optimizer = OrthoMultiObjSGD(params, **self.optimizer_config)
-        elif name == "avg-ortho":
-            self._optimizer = AvgOrthoMultiObjSGD(
-                params, **self.optimizer_config)
-        elif name == "full-ortho":
-            self._optimizer = FullOrthoMultiObjSGD(
-                params, **self.optimizer_config)
-        elif name == "full-nullify":
-            self._optimizer = FullNullifyMultiObjSGD(
-                params, **self.optimizer_config)
-        elif name == "cwise-ortho":
-            self._optimizer = CwiseOrthoMultiObjSGD(
-                params, **self.optimizer_config)
-        elif name == "single":
-            self._optimizer = MultiObjSGD(params, **self.optimizer_config)
+        if name in multiobj_optims:
+            self._optimizer = multiobj_optims[name]
         else:
             raise ValueError(f"Unknown optimizer {name}")
 
