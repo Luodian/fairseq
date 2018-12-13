@@ -8,15 +8,6 @@ def normalize_param(W):
 
 multiobj_optims = {}
 
-#     "avg": AvgMultiObjSGD,
-#     "ortho": OrthoMultiObjSGD,
-#     "avg-ortho": AvgOrthoMultiObjSGD,
-#     "full-ortho": FullOrthoMultiObjSGD,
-#     "full-nullify": FullNullifyMultiObjSGD,
-#     "cwise-ortho": CwiseOrthoMultiObjSGD,
-#     "single": MultiObjSGD,
-# }
-
 
 def register_multiobj_optim(name):
     """Decorator to register a new optimizer."""
@@ -35,6 +26,8 @@ def register_multiobj_optim(name):
                 'Cannot register optimizer with duplicate class name ({})'.format(cls.__name__))
         multiobj_optims[name] = cls
         return cls
+
+    return register_multiobj_optim_cls
 
 
 class MultiObjSGD(Optimizer):

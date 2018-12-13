@@ -11,7 +11,7 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         self.optimizer_config["always_project"] = args.always_project
         self.optimizer_config["reverse"] = args.reverse_constraint
         if name in multiobj_optims:
-            self._optimizer = multiobj_optims[name]
+            self._optimizer = multiobj_optims[name](params, **self.optimizer_config)
         else:
             raise ValueError(f"Unknown optimizer {name}")
 
