@@ -73,7 +73,7 @@ class MultiObjSGD(Optimizer):
                 param_state["constraint"].add_(d_p)
 
     def apply_constraint(self, g_p, c_p):
-        return g_p
+        raise NotImplementedError()
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -102,6 +102,7 @@ class MultiObjSGD(Optimizer):
                 param_state = self.state[p]
                 # skip frozen parameters
                 if getattr(param_state, "frozen", False):
+                    print("Skipping parameter of size", p.dim())
                     continue
                 if momentum != 0:
                     if "momentum_buffer" not in param_state:
@@ -125,6 +126,12 @@ class MultiObjSGD(Optimizer):
         return loss
 
 
+@register_multiobj_optim("single")
+class SingleObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        return g_p
+
 @register_multiobj_optim("avg")
 class AvgMultiObjSGD(MultiObjSGD):
 
@@ -144,6 +151,13 @@ class OrthoMultiObjSGD(MultiObjSGD):
         else:
             return g_p
 
+@register_multiobj_optim("cwise-ortho")
+class CwiseOrthoMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        mask = torch.nn.functional.relu(torch.sign(g_p * c_p))
+        return mask * g_p
+
 
 @register_multiobj_optim("cosine-weighted")
 class CosineWeightedMultiObjSGD(MultiObjSGD):
@@ -152,8 +166,34 @@ class CosineWeightedMultiObjSGD(MultiObjSGD):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
         g_unit = g_p / (g_p.norm(2) + 1e-10)
         cosine = (g_unit * c_unit).sum()
-        return torch.nn.functional.relu(cosine) * c_p
+        return torch.nn.functional.relu(cosine) * g_p
 
+@register_multiobj_optim("cosine-weighted-sum")
+class CosineWeightedSumMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        c_unit = c_p / (c_p.norm(2) + 1e-10)
+        g_unit = g_p / (g_p.norm(2) + 1e-10)
+        cosine = (g_unit * c_unit).sum()
+        return torch.nn.functional.relu(cosine) * 0.5 * (g_p + c_p)
+
+@register_multiobj_optim("colinear")
+class ColinearMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        g_unit = g_p / (g_p.norm(2) + 1e-10)
+        dot = (g_unit * c_p).sum()
+        return torch.nn.functional.relu(dot) * g_unit
+
+@register_multiobj_optim("same-contrib")
+class SameContribMultiObjSGD(MultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p):
+        diff = g_p - c_p
+        diff_norm = diff.norm(2) + 1e-10
+        diff_unit = diff / diff_norm
+        dot = (g_p * diff_unit).sum()
+        return g_p - dot * diff_unit
 
 @register_multiobj_optim("avg-ortho")
 class AvgOrthoMultiObjSGD(MultiObjSGD):
@@ -172,19 +212,12 @@ class AvgOrthoMultiObjSGD(MultiObjSGD):
             # If the two are somewhat aligned, no need to project
             return g_p
 
+class FullMultiObjSGD(MultiObjSGD):
 
-@register_multiobj_optim("full-ortho")
-class FullOrthoMultiObjSGD(MultiObjSGD):
-
-    def apply_constraint(self, g_p, c_p, dot_val):
-        if self.always_project or dot_val <= 0:
-            return g_p - dot_val * c_p
-        else:
-            return g_p
-
-    def compute_dot(self):
+    def compute_dot_and_norms(self):
         dot_val = 0
         c_p_norm_squared = 0
+        g_p_norm_squared = 0
         for group in self.param_groups:
 
             for p in group["params"]:
@@ -198,9 +231,9 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
                     continue
                 c_p = param_state["constraint"]
                 c_p_norm_squared += (c_p * c_p).sum().data
+                g_p_norm_squared += (d_p * d_p).sum().data
                 dot_val += (d_p * c_p).sum().data
-        dot_val = dot_val / (c_p_norm_squared + 1e-20)
-        return dot_val
+        return dot_val, c_p_norm_squared, g_p_norm_squared
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -213,7 +246,7 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
         if closure is not None:
             loss = closure()
 
-        dot_val = self.compute_dot()
+        dot_val, c_p_norm_squared, g_p_norm_squared = self.compute_dot_and_norms()
 
         for group in self.param_groups:
             weight_decay = group["weight_decay"]
@@ -247,15 +280,24 @@ class FullOrthoMultiObjSGD(MultiObjSGD):
 
                 if "constraint" in param_state:
                     d_p = self.apply_constraint(
-                        d_p, param_state["constraint"], dot_val)
+                        d_p, param_state["constraint"], dot_val, c_p_norm_squared, g_p_norm_squared)
 
                 p.data.add_(-group["lr"], d_p)
 
         return loss
 
+@register_multiobj_optim("full-ortho")
+class FullOrthoMultiObjSGD(FullMultiObjSGD):
+
+    def apply_constraint(self, g_p, c_p, dot_val, c_p_norm_squared, g_p_norm_squared):
+        if self.always_project or dot_val <= 0:
+            return g_p - dot_val / c_p_norm_squared * c_p
+        else:
+            return g_p
+
 
 @register_multiobj_optim("full-nullify")
-class FullNullifyMultiObjSGD(FullOrthoMultiObjSGD):
+class FullNullifyMultiObjSGD(FullMultiObjSGD):
 
     def apply_constraint(self, g_p, c_p, dot_val):
         if dot_val <= 0:
@@ -263,10 +305,11 @@ class FullNullifyMultiObjSGD(FullOrthoMultiObjSGD):
         else:
             return g_p
 
+@register_multiobj_optim("full-cosine-weighted")
+class FullOrthoMultiObjSGD(FullMultiObjSGD):
 
-@register_multiobj_optim("cwise-ortho")
-class CwiseOrthoMultiObjSGD(MultiObjSGD):
-
-    def apply_constraint(self, g_p, c_p):
-        mask = torch.nn.functional.relu(torch.sign(g_p * c_p))
-        return mask * g_p
+    def apply_constraint(self, g_p, c_p, dot_val, c_p_norm_squared, g_p_norm_squared):
+        c_unit = c_p / (torch.sqrt(c_p_norm_squared) + 1e-10)
+        g_unit = g_p / (torch.sqrt(g_p_norm_squared) + 1e-10)
+        cosine = (g_unit * c_unit).sum()
+        return torch.nn.functional.relu(cosine) * g_p
