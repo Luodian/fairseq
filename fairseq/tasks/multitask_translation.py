@@ -2,8 +2,9 @@ import itertools
 import os
 
 from fairseq import options
+from fairseq.sequence_generator import SequenceGenerator
 from fairseq.data import (
-    data_utils, Dictionary, LanguagePairDataset,
+    data_utils, Dictionary, LanguagePairDataset, TranslationDataset,
     IndexedRawTextDataset, IndexedCachedDataset, IndexedDataset
 )
 
@@ -53,6 +54,8 @@ class MultiTaskTranslationTask(FairseqTask):
                             help='max number of tokens in the target sequence')
         parser.add_argument('--upsample-primary', default=1, type=int,
                             help='amount to upsample primary dataset')
+        parser.add_argument('--translate-primary', action='store_true',
+                            help='Translate from the primary dataset')
 
     def __init__(self, args, src_dict, tgt_dict):
         super().__init__(args)
@@ -155,18 +158,52 @@ class MultiTaskTranslationTask(FairseqTask):
 
         assert len(src_datasets) == len(tgt_datasets)
 
-        self.datasets[split] = [
-            LanguagePairDataset(
-                src_dataset, src_dataset.sizes, self.src_dict,
-                tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
-                left_pad_source=self.args.left_pad_source,
-                left_pad_target=self.args.left_pad_target,
-                max_source_positions=self.args.max_source_positions,
-                max_target_positions=self.args.max_target_positions,
+        if self.args.translate_primary:
+            self.generator = SequenceGenerator(
+                models=[],
+                tgt_dict=self.tgt_dict,
+                beam_size=1,
+                unk_penalty=0,
+                sampling=True,
             )
-            for src_dataset, tgt_dataset
-            in zip(src_datasets, tgt_datasets)
-        ]
+            self.datasets[split] = [
+                TranslationDataset(
+                    src_dataset=LanguagePairDataset(
+                        src_datasets[0], src_datasets[0].sizes, self.src_dict,
+                        src_datasets[0], src_datasets[0].sizes, self.tgt_dict,
+                        left_pad_source=self.args.left_pad_source,
+                        left_pad_target=self.args.left_pad_target,
+                        max_source_positions=self.args.max_source_positions,
+                        max_target_positions=self.args.max_target_positions,
+                    ),
+                    translation_fn=self.generator.generate,
+                    max_len_a=0,
+                    max_len_b=200,
+                )
+            ]
+            self.datasets[split].append(
+                LanguagePairDataset(
+                    src_datasets[1], src_datasets[1].sizes, self.src_dict,
+                    tgt_datasets[1], tgt_datasets[1].sizes, self.tgt_dict,
+                    left_pad_source=self.args.left_pad_source,
+                    left_pad_target=self.args.left_pad_target,
+                    max_source_positions=self.args.max_source_positions,
+                    max_target_positions=self.args.max_target_positions,
+                )
+            )
+        else:
+            self.datasets[split] = [
+                LanguagePairDataset(
+                    src_dataset, src_dataset.sizes, self.src_dict,
+                    tgt_dataset, tgt_dataset.sizes, self.tgt_dict,
+                    left_pad_source=self.args.left_pad_source,
+                    left_pad_target=self.args.left_pad_target,
+                    max_source_positions=self.args.max_source_positions,
+                    max_target_positions=self.args.max_target_positions,
+                )
+                for src_dataset, tgt_dataset
+                in zip(src_datasets, tgt_datasets)
+            ]
 
     def dataset(self, split, idx=0):
         """
@@ -187,6 +224,12 @@ class MultiTaskTranslationTask(FairseqTask):
         if idx < 0 or idx >= len(self.args.data):
             raise ValueError(f'Invalid dataset idx: {idx}')
         return self.datasets[split][idx]
+
+    def build_model(self, args):
+        model = super(self, MultiTaskTranslationTask).build_model(args)
+        if self.args.translate_primary:
+            self.generator.models = [model]
+        return model
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""
