@@ -8,6 +8,7 @@
 from .dictionary import Dictionary, TruncatedDictionary
 from .fairseq_dataset import FairseqDataset
 from .backtranslation_dataset import BacktranslationDataset
+from .translation_dataset import TranslationDataset
 from .concat_dataset import ConcatDataset
 from .indexed_dataset import IndexedDataset, IndexedCachedDataset, IndexedInMemoryDataset, IndexedRawTextDataset
 from .language_pair_dataset import LanguagePairDataset
@@ -25,6 +26,7 @@ from .iterators import (
 
 __all__ = [
     'BacktranslationDataset',
+    'TranslationDataset',
     'ConcatDataset',
     'CountingIterator',
     'Dictionary',
