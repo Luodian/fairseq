@@ -4,7 +4,7 @@ import os
 from fairseq import options
 from fairseq.sequence_generator import SequenceGenerator
 from fairseq.data import (
-    data_utils, Dictionary, LanguagePairDataset, TranslationDataset,
+    data_utils, Dictionary, LanguagePairDataset, TranslationDataset, TransformEosDataset,
     IndexedRawTextDataset, IndexedCachedDataset, IndexedDataset
 )
 
@@ -158,30 +158,29 @@ class MultiTaskTranslationTask(FairseqTask):
 
         assert len(src_datasets) == len(tgt_datasets)
 
-        if self.args.translate_primary:
-            self.generator = SequenceGenerator(
-                models=[],
-                tgt_dict=self.tgt_dict,
-                beam_size=1,
-                unk_penalty=0,
-                sampling=True,
+        if self.args.translate_primary and split is "train":
+            src_dataset = LanguagePairDataset(
+                src_datasets[0], src_datasets[0].sizes, self.src_dict,
+                tgt_datasets[0], tgt_datasets[0].sizes, self.tgt_dict,
+                left_pad_source=self.args.left_pad_source,
+                left_pad_target=self.args.left_pad_target,
+                max_source_positions=self.args.max_source_positions,
+                max_target_positions=self.args.max_target_positions,
             )
             self.datasets[split] = [
                 TranslationDataset(
-                    src_dataset=LanguagePairDataset(
-                        src_datasets[0], src_datasets[0].sizes, self.src_dict,
-                        src_datasets[0], src_datasets[0].sizes, self.tgt_dict,
-                        left_pad_source=self.args.left_pad_source,
-                        left_pad_target=self.args.left_pad_target,
-                        max_source_positions=self.args.max_source_positions,
-                        max_target_positions=self.args.max_target_positions,
-                    ),
-                    translation_fn=self.generator.generate,
+                    src_dataset=src_dataset,
+                    # We will set the translation_fn later when the model is loaded
+                    translation_fn=None,
                     max_len_a=0,
                     max_len_b=200,
-                )
-            ]
-            self.datasets[split].append(
+                    #output_collater=TransformEosDataset(
+                    #    src_dataset,
+                    #    eos=self.tgt_dict.eos(),
+                    #    append_eos_to_tgt=True,
+                    #).collater,
+                    #cuda=True,
+                ),
                 LanguagePairDataset(
                     src_datasets[1], src_datasets[1].sizes, self.src_dict,
                     tgt_datasets[1], tgt_datasets[1].sizes, self.tgt_dict,
@@ -190,7 +189,7 @@ class MultiTaskTranslationTask(FairseqTask):
                     max_source_positions=self.args.max_source_positions,
                     max_target_positions=self.args.max_target_positions,
                 )
-            )
+            ]
         else:
             self.datasets[split] = [
                 LanguagePairDataset(
@@ -226,9 +225,17 @@ class MultiTaskTranslationTask(FairseqTask):
         return self.datasets[split][idx]
 
     def build_model(self, args):
-        model = super(self, MultiTaskTranslationTask).build_model(args)
+        model = super(MultiTaskTranslationTask, self).build_model(args)
         if self.args.translate_primary:
-            self.generator.models = [model]
+            self.generator = SequenceGenerator(
+                models=[model],
+                tgt_dict=self.tgt_dict,
+                beam_size=1,
+                unk_penalty=0,
+                sampling=True,
+            )
+            for split in self.datasets:
+                self.datasets[split][0].translation_fn = self.generator.generate
         return model
 
     def max_positions(self):

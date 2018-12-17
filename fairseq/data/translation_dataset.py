@@ -40,7 +40,6 @@ def translate_samples(samples, collate_fn, generate_fn, cuda=True):
 
     def update_sample(sample, generated_target):
         # the original source becomes the target
-        sample['source'] = sample['source']
         sample['target'] = generated_target
         return sample
 
@@ -132,7 +131,8 @@ class TranslationDataset(FairseqDataset):
             collate_fn=self.src_dataset.collater,
             generate_fn=(
                 lambda net_input: self.translation_fn(
-                    net_input,
+                    {"src_tokens": net_input["src_tokens"],
+                     "src_lengths": net_input["src_lengths"]},
                     maxlen=int(
                         self.max_len_a *
                         net_input['src_tokens'].size(1) + self.max_len_b
@@ -169,3 +169,11 @@ class TranslationDataset(FairseqDataset):
         """
         src_size = self.src_dataset.size(index)[0]
         return (src_size, src_size)
+
+    def prefetch(self, indices):
+        self.src_dataset.prefetch(indices)
+
+    @property
+    def supports_prefetch(self):
+        return getattr(self.src_dataset, 'supports_prefetch', False)
+
