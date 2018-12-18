@@ -166,7 +166,7 @@ class CosineWeightedMultiObjSGD(MultiObjSGD):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
         g_unit = g_p / (g_p.norm(2) + 1e-10)
         cosine = (g_unit * c_unit).sum()
-        return torch.nn.functional.relu(cosine) * g_p
+        return torch.nn.functional.relu(cosine) * c_p
 
 @register_multiobj_optim("cosine-weighted-sum")
 class CosineWeightedSumMultiObjSGD(MultiObjSGD):
@@ -181,9 +181,10 @@ class CosineWeightedSumMultiObjSGD(MultiObjSGD):
 class ColinearMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
-        g_unit = g_p / (g_p.norm(2) + 1e-10)
-        dot = (g_unit * c_p).sum()
-        return torch.nn.functional.relu(dot) * g_unit
+        #g_unit = g_p / (g_p.norm(2) + 1e-10)
+        c_unit = c_p / (c_p.norm(2) + 1e-10)
+        dot = (c_unit * g_p).sum()
+        return torch.nn.functional.relu(dot) * c_unit
 
 @register_multiobj_optim("same-contrib")
 class SameContribMultiObjSGD(MultiObjSGD):
@@ -299,11 +300,11 @@ class FullOrthoMultiObjSGD(FullMultiObjSGD):
 @register_multiobj_optim("full-nullify")
 class FullNullifyMultiObjSGD(FullMultiObjSGD):
 
-    def apply_constraint(self, g_p, c_p, dot_val):
+    def apply_constraint(self, g_p, c_p, dot_val, c_p_norm_squared, g_p_norm_squared):
         if dot_val <= 0:
-            return torch.zeros_like(g_p.data)
+            return torch.zeros_like(g_p)
         else:
-            return g_p
+            return c_p
 
 @register_multiobj_optim("full-cosine-weighted")
 class FullOrthoMultiObjSGD(FullMultiObjSGD):
