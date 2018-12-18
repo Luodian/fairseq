@@ -132,6 +132,7 @@ class SingleObjSGD(MultiObjSGD):
     def apply_constraint(self, g_p, c_p):
         return g_p
 
+
 @register_multiobj_optim("avg")
 class AvgMultiObjSGD(MultiObjSGD):
 
@@ -151,6 +152,7 @@ class OrthoMultiObjSGD(MultiObjSGD):
         else:
             return g_p
 
+
 @register_multiobj_optim("cwise-ortho")
 class CwiseOrthoMultiObjSGD(MultiObjSGD):
 
@@ -168,6 +170,7 @@ class CosineWeightedMultiObjSGD(MultiObjSGD):
         cosine = (g_unit * c_unit).sum()
         return torch.nn.functional.relu(cosine) * c_p
 
+
 @register_multiobj_optim("cosine-weighted-sum")
 class CosineWeightedSumMultiObjSGD(MultiObjSGD):
 
@@ -177,14 +180,15 @@ class CosineWeightedSumMultiObjSGD(MultiObjSGD):
         cosine = (g_unit * c_unit).sum()
         return torch.nn.functional.relu(cosine) * 0.5 * (g_p + c_p)
 
+
 @register_multiobj_optim("colinear")
 class ColinearMultiObjSGD(MultiObjSGD):
 
     def apply_constraint(self, g_p, c_p):
-        #g_unit = g_p / (g_p.norm(2) + 1e-10)
         c_unit = c_p / (c_p.norm(2) + 1e-10)
         dot = (c_unit * g_p).sum()
         return torch.nn.functional.relu(dot) * c_unit
+
 
 @register_multiobj_optim("same-contrib")
 class SameContribMultiObjSGD(MultiObjSGD):
@@ -195,6 +199,7 @@ class SameContribMultiObjSGD(MultiObjSGD):
         diff_unit = diff / diff_norm
         dot = (g_p * diff_unit).sum()
         return g_p - dot * diff_unit
+
 
 @register_multiobj_optim("avg-ortho")
 class AvgOrthoMultiObjSGD(MultiObjSGD):
@@ -212,6 +217,7 @@ class AvgOrthoMultiObjSGD(MultiObjSGD):
         else:
             # If the two are somewhat aligned, no need to project
             return g_p
+
 
 class FullMultiObjSGD(MultiObjSGD):
 
@@ -287,6 +293,7 @@ class FullMultiObjSGD(MultiObjSGD):
 
         return loss
 
+
 @register_multiobj_optim("full-ortho")
 class FullOrthoMultiObjSGD(FullMultiObjSGD):
 
@@ -306,11 +313,12 @@ class FullNullifyMultiObjSGD(FullMultiObjSGD):
         else:
             return c_p
 
+
 @register_multiobj_optim("full-cosine-weighted")
-class FullOrthoMultiObjSGD(FullMultiObjSGD):
+class FullCosineWeightedMultiObjSGD(FullMultiObjSGD):
 
     def apply_constraint(self, g_p, c_p, dot_val, c_p_norm_squared, g_p_norm_squared):
         c_unit = c_p / (torch.sqrt(c_p_norm_squared) + 1e-10)
         g_unit = g_p / (torch.sqrt(g_p_norm_squared) + 1e-10)
         cosine = (g_unit * c_unit).sum()
-        return torch.nn.functional.relu(cosine) * g_p
+        return torch.nn.functional.relu(cosine) * c_p
