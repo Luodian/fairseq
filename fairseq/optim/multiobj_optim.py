@@ -58,14 +58,17 @@ class MultiObjSGD(Optimizer):
         for group in self.param_groups:
             group.setdefault("nesterov", False)
 
+
     def save_constraints(self):
+        """This saves the gradients wrt. the source task/language/domain/whatever that is used as a constraint"""
 
         for group in self.param_groups:
             for p in group["params"]:
                 param_state = self.state[p]
-                # skip frozen parameters
+                # skip frozen parameters (TODO: remove this)
                 if getattr(param_state, "frozen", False):
                     continue
+                # Actually save the gradient
                 param_state["constraint"] = torch.zeros_like(p.data)
                 if p.grad is None:
                     continue
@@ -73,6 +76,7 @@ class MultiObjSGD(Optimizer):
                 param_state["constraint"].add_(d_p)
 
     def apply_constraint(self, g_p, c_p):
+        """Manipulate the gradient g_p using the gradient from the source task c_p"""
         raise NotImplementedError()
 
     def step(self, closure=None):
@@ -116,7 +120,7 @@ class MultiObjSGD(Optimizer):
                         d_p = d_p.add(momentum, buf)
                     else:
                         d_p = buf
-
+                # Apply constraint
                 if "constraint" in param_state:
                     d_p = self.apply_constraint(
                         d_p, param_state["constraint"])
@@ -128,6 +132,7 @@ class MultiObjSGD(Optimizer):
 
 @register_multiobj_optim("single")
 class SingleObjSGD(MultiObjSGD):
+    """Same as SGD ("single" task)"""
 
     def apply_constraint(self, g_p, c_p):
         return g_p
@@ -135,6 +140,7 @@ class SingleObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("avg")
 class AvgMultiObjSGD(MultiObjSGD):
+    """Average the gradients"""
 
     def apply_constraint(self, g_p, c_p):
         avg_p = 0.5 * (c_p + g_p)
@@ -143,10 +149,12 @@ class AvgMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("ortho")
 class OrthoMultiObjSGD(MultiObjSGD):
+    """Project the gradient g_p on the hyperplane orthogonal to c_p"""
 
     def apply_constraint(self, g_p, c_p):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
         dot = (g_p * c_unit).sum()
+        # Only project if the gradients have negative dot product
         if self.always_project or dot.data <= 0:
             return g_p - dot * c_unit
         else:
@@ -155,6 +163,7 @@ class OrthoMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("cwise-ortho")
 class CwiseOrthoMultiObjSGD(MultiObjSGD):
+    """Orthogonal projection but at the level of scalar parameters"""
 
     def apply_constraint(self, g_p, c_p):
         mask = torch.nn.functional.relu(torch.sign(g_p * c_p))
@@ -163,6 +172,8 @@ class CwiseOrthoMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("cosine-weighted")
 class CosineWeightedMultiObjSGD(MultiObjSGD):
+    """Weight the update by the (rectified) cosine similarity between the two gradients.
+    Update in the direction of c_p"""
 
     def apply_constraint(self, g_p, c_p):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
@@ -173,6 +184,8 @@ class CosineWeightedMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("cosine-weighted-sum")
 class CosineWeightedSumMultiObjSGD(MultiObjSGD):
+    """Weight the update by the (rectified) cosine similarity between the two gradients.
+    Update in the direction of g_p + c_p (see https://arxiv.org/abs/1812.02224)"""
 
     def apply_constraint(self, g_p, c_p):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
@@ -183,6 +196,7 @@ class CosineWeightedSumMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("colinear")
 class ColinearMultiObjSGD(MultiObjSGD):
+    """Project g_p on the direction of c_p (when the 2 are colinear)"""
 
     def apply_constraint(self, g_p, c_p):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
@@ -192,6 +206,8 @@ class ColinearMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("same-contrib")
 class SameContribMultiObjSGD(MultiObjSGD):
+    """Here the update is a vector d such that Loss_1(x + d) - Loss_1(x) = Loss_2(x + d) - Loss_2(x)"""
+    
 
     def apply_constraint(self, g_p, c_p):
         diff = g_p - c_p
@@ -203,6 +219,7 @@ class SameContribMultiObjSGD(MultiObjSGD):
 
 @register_multiobj_optim("avg-ortho")
 class AvgOrthoMultiObjSGD(MultiObjSGD):
+    """Project g_p on the orthogonal of c_p, and c_p on the orthogonal of g_p, then average"""
 
     def apply_constraint(self, g_p, c_p):
         g_norm = g_p.norm(2)+1e-10

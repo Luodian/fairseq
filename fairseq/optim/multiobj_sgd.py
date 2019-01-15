@@ -24,6 +24,7 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         parser.add_argument('--reverse-constraint', action="store_true")
 
     def save_constraints(self):
+        """This saves the gradients wrt. the source task/language/domain/whatever that is used as a constraint"""
         self.optimizer.save_constraints()
 
     @property
