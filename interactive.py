@@ -94,12 +94,17 @@ def main(args):
         enc_or_dec, layer, head = args.transformer_mask_head.split(":")
         layer = int(layer) - 1
         head = int(head) - 1
+        # Select attention layer to mask
         if enc_or_dec == "E":
-            model.encoder.layers[layer].self_attn.mask_head = head
+            attention = model.encoder.layers[layer].self_attn
         elif enc_or_dec == "D":
-            model.decoder.layers[layer].self_attn.mask_head = head
+            attention = model.decoder.layers[layer].self_attn
         elif enc_or_dec == "A":
-            model.decoder.layers[layer].encoder_attn.mask_head = head
+            attention = model.decoder.layers[layer].encoder_attn
+        # Set masking parameters
+        attention.mask_head = head
+        attention.mask_all_but_one_head = args.transformer_mask_all_but_one_head
+        
 
     # Initialize generator
     translator = SequenceGenerator(

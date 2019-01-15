@@ -19,7 +19,7 @@ class MultiheadAttention(nn.Module):
     See "Attention Is All You Need" for more details.
     """
 
-    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, mask_head=None):
+    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, mask_head=None, mask_all_but_one_head=False):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -48,6 +48,7 @@ class MultiheadAttention(nn.Module):
         self.onnx_trace = False
 
         self.mask_head = mask_head
+        self.mask_all_but_one_head = mask_all_but_one_head
 
     def prepare_for_onnx_export_(self):
         self.onnx_trace = True
@@ -180,8 +181,10 @@ class MultiheadAttention(nn.Module):
         # Mask a specific key
         mask_head = mask_head or self.mask_head
         if mask_head is not None:
-            key_mask = attn_weights.new_ones(bsz,self.num_heads)
-            key_mask[:, mask_head] = 0
+            masked_value = 1 if self.mask_all_but_one_head else 0
+            not_masked_value = 0 if self.mask_all_but_one_head else 1
+            key_mask = attn_weights.new_full((bsz,self.num_heads), not_masked_value)
+            key_mask[:, mask_head] = masked_value
             attn_weights = attn_weights * key_mask.view(bsz * self.num_heads, 1, 1)
 
         attn = torch.bmm(attn_weights, v)

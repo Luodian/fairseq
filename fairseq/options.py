@@ -334,6 +334,7 @@ def add_generation_args(parser):
                        help='if set, uses attention feedback to compute and print alignment to source tokens')
     group.add_argument('--transformer-mask-head', default=None, type=str, metavar='{E,D}:L:H',
                        help='')
+    group.add_argument('--transformer-mask-all-but-one-head', action='store_true', help='')
     return group
 
 
