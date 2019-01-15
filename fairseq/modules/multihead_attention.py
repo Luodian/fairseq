@@ -19,7 +19,7 @@ class MultiheadAttention(nn.Module):
     See "Attention Is All You Need" for more details.
     """
 
-    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False):
+    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, mask_key=None):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -47,6 +47,8 @@ class MultiheadAttention(nn.Module):
 
         self.onnx_trace = False
 
+        self.mask_key = mask_key
+
     def prepare_for_onnx_export_(self):
         self.onnx_trace = True
 
@@ -62,7 +64,7 @@ class MultiheadAttention(nn.Module):
             nn.init.xavier_normal_(self.bias_v)
 
     def forward(self, query, key, value, key_padding_mask=None, incremental_state=None,
-                need_weights=True, static_kv=False, attn_mask=None):
+                need_weights=True, static_kv=False, attn_mask=None, mask_key=None):
         """Input shape: Time x Batch x Channel
 
         Self-attention can be implemented by passing in the same arguments for
@@ -174,6 +176,13 @@ class MultiheadAttention(nn.Module):
 
         attn_weights = F.softmax(attn_weights.float(), dim=-1).type_as(attn_weights)
         attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
+
+        # Mask a specific key
+        mask_key = mask_key or self.mask_key
+        if mask_key is not None:
+            key_mask = torch.ones(bsz,self.num_heads)
+            key_mask[:, mask_key] = 0
+            attn_weights = attn_weights * key_mask.view(bsz * self.num_heads, 1, 1)
 
         attn = torch.bmm(attn_weights, v)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]

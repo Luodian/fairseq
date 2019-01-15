@@ -90,6 +90,11 @@ def main(args):
         if args.fp16:
             model.half()
 
+    if args.transformer_mask_head is not None:
+        enc_or_dec, layer, head = args.transformer_mask_head.split(":")
+        transformer = model.encoder if enc_or_dec == "E" else model.decoder
+        transformer.layers[int(layer)].self_attn.mask_head = int(head)
+
     # Initialize generator
     translator = SequenceGenerator(
         models, tgt_dict, beam_size=args.beam, minlen=args.min_len,
