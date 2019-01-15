@@ -92,8 +92,14 @@ def main(args):
 
     if args.transformer_mask_head is not None:
         enc_or_dec, layer, head = args.transformer_mask_head.split(":")
-        transformer = model.encoder if enc_or_dec == "E" else model.decoder
-        transformer.layers[int(layer)-1].self_attn.mask_head = int(head) - 1
+        layer = int(layer) - 1
+        head = int(head) - 1
+        if enc_or_dec == "E":
+            model.encoder.layers[layer].self_attn.mask_head = head
+        elif enc_or_dec == "D":
+            model.decoder.layers[layer].self_attn.mask_head = head
+        elif enc_or_dec == "A":
+            model.decoder.layers[layer].encoder_attn.mask_head = head
 
     # Initialize generator
     translator = SequenceGenerator(
