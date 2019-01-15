@@ -168,7 +168,7 @@ class CosineWeightedMultiObjSGD(MultiObjSGD):
         c_unit = c_p / (c_p.norm(2) + 1e-10)
         g_unit = g_p / (g_p.norm(2) + 1e-10)
         cosine = (g_unit * c_unit).sum()
-        return torch.nn.functional.relu(cosine) * c_p
+        return torch.nn.functional.relu(cosine) * g_p
 
 
 @register_multiobj_optim("cosine-weighted-sum")
@@ -321,4 +321,4 @@ class FullCosineWeightedMultiObjSGD(FullMultiObjSGD):
         c_unit = c_p / (torch.sqrt(c_p_norm_squared) + 1e-10)
         g_unit = g_p / (torch.sqrt(g_p_norm_squared) + 1e-10)
         cosine = (g_unit * c_unit).sum()
-        return torch.nn.functional.relu(cosine) * c_p
+        return torch.nn.functional.relu(cosine) * g_p

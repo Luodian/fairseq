@@ -52,23 +52,6 @@ def main(args):
 
     # Build trainer
     trainer = Trainer(args, task, model, criterion, dummy_batch)
-
-    if args.freeze_decoder:
-        print('| Freezing decoder weight')
-        for p in trainer.model.decoder.parameters():
-            p.require_grad = False
-            trainer.optimizer._optimizer.state[p]["frozen"] = True
-    if args.freeze_embeddings:
-        print('| Freezing embedding layers')
-        # Freeze source embeddings
-        src_embeds = trainer.model.encoder.embed_tokens.weight
-        src_embeds.require_grad = False
-        trainer.optimizer._optimizer.state[src_embeds]["frozen"] = True
-        # Freeze target embeddings
-        tgt_embeds = trainer.model.decoder.embed_tokens.weight
-        tgt_embeds.require_grad = False
-        trainer.optimizer._optimizer.state[tgt_embeds]["frozen"] = True
-
     print('| training on {} GPUs'.format(args.distributed_world_size))
     print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
         args.max_tokens,

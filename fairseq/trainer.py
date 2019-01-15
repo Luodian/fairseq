@@ -44,11 +44,26 @@ class Trainer(object):
         else:
             self._model = model.cuda()
 
+
         self._dummy_batch = dummy_batch
         self._num_updates = 0
         self._optim_history = None
         self._optimizer = None
         self._wrapped_model = None
+
+        if args.freeze_decoder:
+            print('| Freezing decoder weight')
+            for p in self._model.decoder.parameters():
+                p.requires_grad = False
+                #trainer.optimizer._optimizer.state[p]["frozen"] = True
+        if args.freeze_embeddings:
+            print('| Freezing embedding layers')
+            # Freeze source embeddings
+            self._model.encoder.embed_tokens.weight.requires_grad = False
+            #trainer.optimizer._optimizer.state[src_embeds]["frozen"] = True
+            # Freeze target embeddings
+            self._model.decoder.embed_tokens.weight.requires_grad = False
+            #trainer.optimizer._optimizer.state[tgt_embeds]["frozen"] = True
 
         self.init_meters(args)
 
