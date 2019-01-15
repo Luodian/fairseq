@@ -32,6 +32,10 @@ def register_multiobj_optim(name):
 
 class MultiObjSGD(Optimizer):
     """
+    This optimizer works like SGD excepts:
+
+    1. it stores gradient from an auxiliary task with `.save_constraints()`
+    2. it uses those auxiliary gradients using `.apply_constraints()` before applying the update
     """
 
     def __init__(self, params, lr=required, momentum=0, dampening=0,
@@ -237,6 +241,7 @@ class AvgOrthoMultiObjSGD(MultiObjSGD):
 
 
 class FullMultiObjSGD(MultiObjSGD):
+    """Same as multiobj but the gradient manipulations are now done on the full gradient (not "per matrix")"""
 
     def compute_dot_and_norms(self):
         dot_val = 0
