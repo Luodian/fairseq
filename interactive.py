@@ -93,7 +93,7 @@ def main(args):
     if args.transformer_mask_head is not None:
         enc_or_dec, layer, head = args.transformer_mask_head.split(":")
         transformer = model.encoder if enc_or_dec == "E" else model.decoder
-        transformer.layers[int(layer)].self_attn.mask_head = int(head)
+        transformer.layers[int(layer)-1].self_attn.mask_head = int(head) - 1
 
     # Initialize generator
     translator = SequenceGenerator(
