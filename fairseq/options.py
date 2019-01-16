@@ -335,6 +335,7 @@ def add_generation_args(parser):
     group.add_argument('--transformer-mask-head', default=None, type=str, metavar='{E,D}:L:H',
                        help='')
     group.add_argument('--transformer-mask-all-but-one-head', action='store_true', help='')
+    group.add_argument('--transformer-mask-rescale', action='store_true', help='')
     return group
 
 
