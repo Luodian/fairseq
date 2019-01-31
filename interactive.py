@@ -55,6 +55,45 @@ def make_batches(lines, args, task, max_positions):
         ), batch['id']
 
 
+def parse_head_pruning_descriptors(
+    descriptors,
+    reverse_descriptors=False,
+    n_heads=None
+):
+    """Returns a dictionary mapping layers to the set of heads to prune in
+    this layer (for each kind of attention)"""
+    to_prune = {
+        "E": {},
+        "A": {},
+        "D": {},
+    }
+    for descriptor in descriptors:
+        attn_type, layer, heads = descriptor.split(":")
+        layer = int(layer) - 1
+        heads = set(int(head) - 1 for head in heads.split(","))
+        if layer not in to_prune[attn_type]:
+            to_prune[attn_type][layer] = set()
+        to_prune[attn_type][layer].update(heads)
+    # Reverse
+    if reverse_descriptors:
+        if n_heads is None:
+            raise ValueError("You need to specify the total number of heads")
+        for attn_type in to_prune:
+            for layer, heads in to_prune[attn_type].items():
+                to_prune[attn_type][layer] = set([head for head in range(n_heads)
+                                                  if head not in heads])
+    return to_prune
+
+
+def get_attn_layer(model, attn_type, layer):
+    if attn_type == "E":
+        return model.encoder.layers[layer].self_attn
+    elif attn_type == "D":
+        return model.decoder.layers[layer].self_attn
+    elif attn_type == "A":
+        return model.decoder.layers[layer].encoder_attn
+
+
 def main(args):
     if args.buffer_size < 1:
         args.buffer_size = 1
@@ -76,7 +115,11 @@ def main(args):
     # Load ensemble
     print('| loading model(s) from {}'.format(args.path))
     model_paths = args.path.split(':')
-    models, model_args = utils.load_ensemble_for_inference(model_paths, task, model_arg_overrides=eval(args.model_overrides))
+    models, model_args = utils.load_ensemble_for_inference(
+        model_paths,
+        task,
+        model_arg_overrides=eval(args.model_overrides)
+    )
 
     # Set dictionaries
     tgt_dict = task.target_dictionary
@@ -91,20 +134,19 @@ def main(args):
             model.half()
 
     if args.transformer_mask_head is not None:
-        enc_or_dec, layer, head = args.transformer_mask_head.split(":")
-        layer = int(layer) - 1
-        head = int(head) - 1
-        # Select attention layer to mask
-        if enc_or_dec == "E":
-            attention = model.encoder.layers[layer].self_attn
-        elif enc_or_dec == "D":
-            attention = model.decoder.layers[layer].self_attn
-        elif enc_or_dec == "A":
-            attention = model.decoder.layers[layer].encoder_attn
-        # Set masking parameters
-        attention.mask_head = head
-        attention.mask_all_but_one_head = args.transformer_mask_all_but_one_head
-        
+        # Determine whic head to prune
+        to_prune = parse_head_pruning_descriptors(
+            args.transformer_mask_head,
+            reverse_descriptors=args.transformer_mask_all_but_one_head,
+            n_heads=model.encoder.args.encoder_attention_heads
+        )
+        # Apply pruning
+        for attn_type in to_prune:
+            for layer, heads in to_prune[attn_type].items():
+                attn_layer = get_attn_layer(model, attn_type, layer)
+                attn_layer.mask_head = heads
+                attn_layer.mask_head_rescale = args.transformer_mask_head_rescale
+                attn_layer._head_mask = None
 
     # Initialize generator
     translator = SequenceGenerator(

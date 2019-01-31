@@ -20,7 +20,7 @@ class MultiheadAttention(nn.Module):
     """
 
     def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False,
-        mask_head=None, mask_all_but_one_head=False, mask_head_rescale=False):
+        mask_heads=None, mask_all_but_one_head=False, mask_head_rescale=False):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -48,9 +48,10 @@ class MultiheadAttention(nn.Module):
 
         self.onnx_trace = False
 
-        self.mask_head = mask_head
+        self.mask_heads = mask_heads
         self.mask_all_but_one_head = mask_all_but_one_head
         self.mask_head_rescale = mask_head_rescale
+        self._head_mask = None
 
     def prepare_for_onnx_export_(self):
         self.onnx_trace = True
@@ -66,8 +67,16 @@ class MultiheadAttention(nn.Module):
         if self.bias_v is not None:
             nn.init.xavier_normal_(self.bias_v)
 
+    @property
+    def head_mask(self):
+        if self._head_mask is None:
+            self._head_mask = torch.ones(self.num_heads)
+            for head_idx in self.mask_heads:
+                self._head_mask[head_idx] = 0
+        return self._head_mask.view(1, self.num_heads, 1, 1)
+
     def forward(self, query, key, value, key_padding_mask=None, incremental_state=None,
-                need_weights=True, static_kv=False, attn_mask=None, mask_head=None):
+                need_weights=True, static_kv=False, attn_mask=None, mask_heads=None):
         """Input shape: Time x Batch x Channel
 
         Self-attention can be implemented by passing in the same arguments for
@@ -161,7 +170,10 @@ class MultiheadAttention(nn.Module):
             if attn_mask is not None:
                 attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
             if key_padding_mask is not None:
-                key_padding_mask = torch.cat([key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
+                key_padding_mask = torch.cat(
+                    [key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)],
+                    dim=1
+                )
 
         attn_weights = torch.bmm(q, k.transpose(1, 2))
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
@@ -179,10 +191,9 @@ class MultiheadAttention(nn.Module):
 
         attn_weights = F.softmax(attn_weights.float(), dim=-1).type_as(attn_weights)
         attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
-
-        # Mask a specific key
-        mask_head = mask_head or self.mask_head
-        if mask_head is not None:
+        # Mask a specific head
+        mask_heads = mask_heads or self.mask_heads
+        if mask_heads is not None:
             scale = 1
             if self.mask_head_rescale:
                 if self.mask_all_but_one_head:
@@ -191,20 +202,24 @@ class MultiheadAttention(nn.Module):
                     scale *= self.num_head / (self.num_head - 1)
             masked_value = scale if self.mask_all_but_one_head else 0
             not_masked_value = 0 if self.mask_all_but_one_head else scale
-            head_mask = attn_weights.new_full((bsz,self.num_heads), not_masked_value)
-            head_mask[:, mask_head] = masked_value
-            attn_weights = attn_weights * head_mask.view(bsz * self.num_heads, 1, 1)
+            head_mask = attn_weights.new_full((bsz, self.num_heads), not_masked_value)
+            head_mask[:, mask_heads] = masked_value
+            head_mask = head_mask
+            if self.mask_head_rescale:
+                head_mask *= self.num_heads / head_mask.sum()
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) * head_mask
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-
-        attn = torch.bmm(attn_weights, v)
-        assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
-        if (self.onnx_trace and attn.size(1) == 1):
+        ctx = torch.bmm(attn_weights, v)
+        save_ctx = ctx.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        assert list(ctx.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
+        if (self.onnx_trace and ctx.size(1) == 1):
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
+            ctx = ctx.contiguous().view(tgt_len, bsz, embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-        attn = self.out_proj(attn)
+            ctx = ctx.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        attn = self.out_proj(ctx)
 
         if need_weights:
             # average attention weights over heads
@@ -213,7 +228,7 @@ class MultiheadAttention(nn.Module):
         else:
             attn_weights = None
 
-        return attn, attn_weights
+        return attn, attn_weights, save_ctx
 
     def in_proj_qkv(self, query):
         return self._in_proj(query).chunk(3, dim=-1)

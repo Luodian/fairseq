@@ -4,7 +4,7 @@ import os
 from fairseq import options
 from fairseq.sequence_generator import SequenceGenerator
 from fairseq.data import (
-    data_utils, Dictionary, LanguagePairDataset, TranslationDataset, TransformEosDataset,
+    data_utils, Dictionary, LanguagePairDataset, TranslationDataset,
     IndexedRawTextDataset, IndexedCachedDataset, IndexedDataset
 )
 
@@ -174,12 +174,12 @@ class MultiTaskTranslationTask(FairseqTask):
                     translation_fn=None,
                     max_len_a=0,
                     max_len_b=200,
-                    #output_collater=TransformEosDataset(
+                    # output_collater=TransformEosDataset(
                     #    src_dataset,
                     #    eos=self.tgt_dict.eos(),
                     #    append_eos_to_tgt=True,
-                    #).collater,
-                    #cuda=True,
+                    # ).collater,
+                    # cuda=True,
                 ),
                 LanguagePairDataset(
                     src_datasets[1], src_datasets[1].sizes, self.src_dict,

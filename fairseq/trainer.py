@@ -44,7 +44,6 @@ class Trainer(object):
         else:
             self._model = model.cuda()
 
-
         self._dummy_batch = dummy_batch
         self._num_updates = 0
         self._optim_history = None
@@ -55,15 +54,12 @@ class Trainer(object):
             print('| Freezing decoder weight')
             for p in self._model.decoder.parameters():
                 p.requires_grad = False
-                #trainer.optimizer._optimizer.state[p]["frozen"] = True
         if args.freeze_embeddings:
             print('| Freezing embedding layers')
             # Freeze source embeddings
             self._model.encoder.embed_tokens.weight.requires_grad = False
-            #trainer.optimizer._optimizer.state[src_embeds]["frozen"] = True
             # Freeze target embeddings
             self._model.decoder.embed_tokens.weight.requires_grad = False
-            #trainer.optimizer._optimizer.state[tgt_embeds]["frozen"] = True
 
         self.init_meters(args)
 
@@ -351,6 +347,57 @@ class Trainer(object):
         if 'nll_loss' in logging_output:
             self.meters['valid_nll_loss'].update(
                 logging_output.get('nll_loss', 0), ntokens)
+
+        return logging_output
+
+    def prune_step(self, sample, raise_oom=False):
+        """Do forward and backward pass in evaluation mode."""
+        self.model.eval()
+        self.zero_grad()
+
+        sample = self._prepare_sample(sample)
+        if sample is None:
+            sample = self._prepare_sample(self._dummy_batch)
+            ignore_results = True
+        else:
+            ignore_results = False
+
+        try:
+            loss, sample_size, logging_output = self.task.prune_step(
+                sample, self.model, self.criterion,
+            )
+        except RuntimeError as e:
+            if 'out of memory' in str(e) and not raise_oom:
+                print('| WARNING: ran out of memory, retrying batch')
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        del p.grad  # free some memory
+                torch.cuda.empty_cache()
+                return self.prune_step(sample, raise_oom=True)
+            else:
+                raise e
+
+        if ignore_results:
+            logging_output, sample_size = {}, 0
+
+        # gather logging outputs from all replicas
+        if self.args.distributed_world_size > 1:
+            logging_output, sample_size = zip(*distributed_utils.all_gather_list(
+                [logging_output, sample_size],
+            ))
+            logging_output = list(logging_output)
+            sample_size = list(sample_size)
+        else:
+            logging_output = [logging_output]
+            sample_size = [sample_size]
+
+        # aggregate logging outputs and sample sizes
+        logging_output = self.task.aggregate_logging_outputs(
+            logging_output, self.criterion
+        )
+        sample_size = self.task.grad_denom(
+            sample_size, self.criterion
+        )
 
         return logging_output
 
