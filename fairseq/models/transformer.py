@@ -587,6 +587,7 @@ class TransformerEncoderLayer(nn.Module):
         self.fc1 = Linear(self.embed_dim, args.encoder_ffn_embed_dim)
         self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim)
         self.layer_norms = nn.ModuleList([LayerNorm(self.embed_dim) for i in range(2)])
+        self.self_attn_variables = {}
 
     def forward(self, x, encoder_padding_mask):
         """
@@ -600,7 +601,10 @@ class TransformerEncoderLayer(nn.Module):
         """
         residual = x
         x = self.maybe_layer_norm(0, x, before=True)
-        x, _ = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+        x, weights, context = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+        self.self_attn_variables["weights"] = weights
+        self.self_attn_variables["context"] = context
+        self.self_attn_variables["mask"] = encoder_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(0, x, after=True)
@@ -670,6 +674,8 @@ class TransformerDecoderLayer(nn.Module):
         self.need_attn = True
 
         self.onnx_trace = False
+        self.self_attn_variables = {}
+        self.encoder_attn_variables = {}
 
     def prepare_for_onnx_export_(self):
         self.onnx_trace = True
@@ -694,7 +700,7 @@ class TransformerDecoderLayer(nn.Module):
             prev_key, prev_value = prev_self_attn_state
             saved_state = {"prev_key": prev_key, "prev_value": prev_value}
             self.self_attn._set_input_buffer(incremental_state, saved_state)
-        x, _ = self.self_attn(
+        x, weights, context = self.self_attn(
             query=x,
             key=x,
             value=x,
@@ -703,6 +709,9 @@ class TransformerDecoderLayer(nn.Module):
             need_weights=False,
             attn_mask=self_attn_mask,
         )
+        self.self_attn_variables["weights"] = weights
+        self.self_attn_variables["context"] = context
+        self.self_attn_variables["mask"] = self_attn_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.self_attn_layer_norm, x, after=True)
@@ -717,7 +726,7 @@ class TransformerDecoderLayer(nn.Module):
                 prev_key, prev_value = prev_attn_state
                 saved_state = {"prev_key": prev_key, "prev_value": prev_value}
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
-            x, attn = self.encoder_attn(
+            x, attn, context = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -726,6 +735,9 @@ class TransformerDecoderLayer(nn.Module):
                 static_kv=True,
                 need_weights=(not self.training and self.need_attn),
             )
+            self.encoder_attn_variables["weights"] = attn
+            self.encoder_attn_variables["context"] = context
+            self.encoder_attn_variables["mask"] = encoder_padding_mask
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             x = self.maybe_layer_norm(self.encoder_attn_layer_norm, x, after=True)
@@ -862,6 +874,7 @@ def base_architecture(args):
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_embed_dim)
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
 
+
 @register_model_architecture('transformer', 'transformer_kftt_ja_en')
 def transformer_kftt_ja_en(args):
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 512)
@@ -874,6 +887,7 @@ def transformer_kftt_ja_en(args):
     args.decoder_layers = getattr(args, 'decoder_layers', 4)
     args.share_decoder_input_output_embed = getattr(args, 'share_decoder_input_output_embed', True)
     base_architecture(args)
+
 
 @register_model_architecture('transformer', 'transformer_iwslt_de_en')
 def transformer_iwslt_de_en(args):

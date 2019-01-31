@@ -6,7 +6,6 @@
 # can be found in the PATENTS file in the same directory.
 
 import itertools
-import numpy as np
 import os
 
 from fairseq import options
@@ -162,6 +161,19 @@ class TranslationTask(FairseqTask):
             max_source_positions=self.args.max_source_positions,
             max_target_positions=self.args.max_target_positions,
         )
+
+    def prune_step(self, sample, model, criterion):
+        """Like train_step but we retain_grad for some variables"""
+        model.eval()
+        # Forward pass
+        loss, sample_size, logging_output = criterion(model, sample)
+        # Retain grads wrt. attn context (for computing the importance score)
+        model.encoder.self_attn_variables["context"].retain_grad()
+        model.decoder.self_attn_variables["context"].retain_grad()
+        model.decoder.encoder_attn_variables["context"].retain_grad()
+        # Get those gradients
+        loss.backward()
+        return loss, sample_size, logging_output
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""
