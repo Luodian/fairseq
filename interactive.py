@@ -104,6 +104,7 @@ def main(args):
         # Set masking parameters
         attention.mask_head = head
         attention.mask_all_but_one_head = args.transformer_mask_all_but_one_head
+        attention.mask_head_rescale = args.transformer_mask_rescale
         
 
     # Initialize generator

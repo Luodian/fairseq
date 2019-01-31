@@ -186,9 +186,9 @@ class MultiheadAttention(nn.Module):
             scale = 1
             if self.mask_head_rescale:
                 if self.mask_all_but_one_head:
-                    scale *= self.num_head
+                    scale *= self.num_heads
                 else:
-                    scale *= self.num_head / (self.num_head - 1)
+                    scale *= self.num_heads / (self.num_heads - 1)
             masked_value = scale if self.mask_all_but_one_head else 0
             not_masked_value = 0 if self.mask_all_but_one_head else scale
             head_mask = attn_weights.new_full((bsz,self.num_heads), not_masked_value)
