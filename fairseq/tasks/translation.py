@@ -168,12 +168,14 @@ class TranslationTask(FairseqTask):
         # Forward pass
         loss, sample_size, logging_output = criterion(model, sample)
         # Retain grads wrt. attn context (for computing the importance score)
-        model.encoder.self_attn_variables["context"].retain_grad()
-        model.decoder.self_attn_variables["context"].retain_grad()
-        model.decoder.encoder_attn_variables["context"].retain_grad()
+        for layer in model.encoder.layers:
+            layer.self_attn_variables["context"].retain_grad()
+        for layer in model.decoder.layers:
+            layer.self_attn_variables["context"].retain_grad()
+            layer.encoder_attn_variables["context"].retain_grad()
         # Get those gradients
         loss.backward()
-        return loss, sample_size, logging_output
+        return sample_size, logging_output
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""

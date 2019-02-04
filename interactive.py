@@ -21,7 +21,7 @@ from fairseq.sequence_generator import SequenceGenerator
 
 Batch = namedtuple('Batch', 'srcs tokens lengths')
 Translation = namedtuple(
-    'Translation', 'src_str hypos pos_scores alignments out_str')
+    'Translation', 'src_str hypos pos_scores alignments')
 
 
 def buffered_read(buffer_size, input_feed=None):
@@ -73,6 +73,7 @@ def parse_head_pruning_descriptors(
         "D": {},
     }
     for descriptor in descriptors:
+        print(descriptor)
         attn_type, layer, heads = descriptor.split(":")
         layer = int(layer) - 1
         heads = set(int(head) - 1 for head in heads.split(","))
@@ -117,9 +118,6 @@ def make_result(src_str, hypos, align_dict, tgt_dict, nbest=1, remove_bpe=False,
             tgt_dict=tgt_dict,
             remove_bpe=remove_bpe,
         )
-        # Save the best output
-        if i == 0:
-            result.out_str = hypo_str
         # Now all hypos
         result.hypos.append('H\t{}\t{}'.format(hypo['score'], hypo_str))
         result.pos_scores.append('P\t{}'.format(
@@ -146,7 +144,7 @@ def process_batch(
     remove_bpe=False,
     print_alignment=False,
     max_len_a=0,
-    amx_len_b=200,
+    max_len_b=200,
 ):
     tokens = batch.tokens
     lengths = batch.lengths
@@ -213,7 +211,7 @@ def translate_corpus(
         print('| Sentence buffer size:', buffer_size)
     print('| Type the input sentence and press return:')
     all_results = []
-    for inputs in buffered_read(buffer_size):
+    for inputs in buffered_read(buffer_size, input_feed):
         indices = []
         results = []
         for batch, batch_indices in make_batches(inputs, task, max_positions, max_sentences, max_tokens):
@@ -282,13 +280,14 @@ def main(args):
         if args.fp16:
             model.half()
 
-    if args.transformer_mask_head is not None:
+    if len(args.transformer_mask_heads) > 0:
         # Determine which head to prune
         to_prune = parse_head_pruning_descriptors(
-            args.transformer_mask_head,
+            args.transformer_mask_heads,
             reverse_descriptors=args.transformer_mask_all_but_one_head,
-            n_heads=model.encoder.args.encoder_attention_heads
+            n_heads=model.encoder.layers[0].self_attn.num_heads
         )
+        print(to_prune)
         # Apply pruning
         mask_heads(model, to_prune, args.transformer_mask_rescale)
 

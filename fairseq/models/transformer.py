@@ -737,7 +737,7 @@ class TransformerDecoderLayer(nn.Module):
             )
             self.encoder_attn_variables["weights"] = attn
             self.encoder_attn_variables["context"] = context
-            self.encoder_attn_variables["mask"] = encoder_padding_mask
+            self.encoder_attn_variables["mask"] = self_attn_padding_mask
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             x = self.maybe_layer_norm(self.encoder_attn_layer_norm, x, after=True)

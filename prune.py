@@ -44,7 +44,7 @@ def eval_bleu_score(
     results = translate_corpus(
         translator,
         task,
-        input_feed=eval_data.src,
+        input_feed=[eval_data.src.get_original_text(i) for i in range(len(eval_data.src))],
         buffer_size=buffer_size,
         replace_unk=replace_unk,
         use_cuda=use_cuda,
@@ -56,9 +56,11 @@ def eval_bleu_score(
         max_tokens=max_tokens,
     )
 
-    out = [result.out_str for result in results]
-    ref = eval_data.tgt
+    out = [result.hypos[0].split("\t")[-1] for result in results]
+    ref = [eval_data.tgt.get_original_text(i) for i in range(len(eval_data.tgt))]
 
+    print(len(out))
+    print(len(ref))
     return sacrebleu.corpus_bleu(out, [ref])
 
 
@@ -76,7 +78,7 @@ def main(args):
     task = tasks.setup_task(args)
 
     # Load dataset splits
-    load_dataset_splits(task, ['train', 'valid'])
+    load_dataset_splits(task, ['train', "valid"])
 
     # Build model and criterion
     model = task.build_model(args)
@@ -117,6 +119,24 @@ def main(args):
         num_shards=args.distributed_world_size,
         shard_id=args.distributed_rank,
     )
+    # Initial BLEU
+    bleu = eval_bleu_score(
+        model,
+        task,
+        task.dataset(args.valid_subset),
+        beam=args.beam,
+        replace_unk=args.replace_unk,
+        lenpen=args.lenpen,
+        buffer_size=100,
+        use_cuda=torch.cuda.is_available() and not args.cpu,
+        remove_bpe=args.remove_bpe,
+        max_sentences=args.max_sentences,
+        max_tokens=args.max_tokens,
+        stop_early=not args.no_early_stop,
+        normalize_scores=not args.unnormalized,
+        min_len=args.min_len,
+    )
+    print(f"BLEU score: \t{bleu.score:.2f}")
 
     # Load the latest checkpoint if one is available
     if not load_checkpoint(args, trainer, epoch_itr):
@@ -146,19 +166,19 @@ def main(args):
         print(
             "\t".join(f"{x:.5f}" for x in head_importance["decoder_self"][layer]))
     # Print sorted pruning profile
-    encoder_self_profile = get_profile(
-        head_importance["encoder_self"], prefix="E")
-    encoder_decoder_profile = get_profile(
-        head_importance["encoder_decoder"], prefix="A")
-    decoder_self_profile = get_profile(
-        head_importance["decoder_self"], prefix="D")
-    all_profiles = encoder_self_profile + \
-        encoder_decoder_profile + decoder_self_profile
+    encoder_self_profile = get_profile(head_importance["encoder_self"], prefix="E")
+    encoder_decoder_profile = get_profile(head_importance["encoder_decoder"], prefix="A")
+    decoder_self_profile = get_profile(head_importance["decoder_self"], prefix="D")
+    # Join all
+    all_profiles = {}
+    all_profiles.update(encoder_self_profile)
+    all_profiles.update(encoder_decoder_profile)
+    all_profiles.update(decoder_self_profile)
     sorted_profiles = sorted(all_profiles.items(), key=lambda x: x[1])
     print("Heads sorted by importance:")
     print(" ".join(p for p, _ in sorted_profiles))
     print("Sorted head importance scores:")
-    print(" ".join(v for _, v in sorted_profiles))
+    print(" ".join(f"{v.data:.5f}" for _, v in sorted_profiles))
 
     encoder_layers = trainer.args.encoder_layers
     decoder_layers = trainer.args.decoder_layers
@@ -207,12 +227,15 @@ def batch_head_importance(attn_variables):
     ctx = attn_variables["context"]
     mask = attn_variables["mask"]
     # Reverse mask
-    mask = torch.eq(mask, 0).float()
+    if mask is not None:
+        mask = torch.eq(mask, 0.0).float()
+    else:
+        mask = torch.ones(ctx.size(0), ctx.size(2)).to(ctx.device)
     # Context gradient
     d_ctx = ctx.grad
     # Take the absolute dot
     importance = torch.einsum(
-        "bhli, bhlj->bhl",
+        "bhli,bhlj->bhl",
         [ctx, d_ctx],
     )
     importance *= mask.unsqueeze(1)
@@ -239,7 +262,7 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     decoder_layers = trainer.args.decoder_layers
     encoder_heads = trainer.args.encoder_attention_heads
     decoder_heads = trainer.args.decoder_attention_heads
-    device = trainer.model.device
+    device = next(trainer.model.parameters()).device
     head_importance = {
         "encoder_self": torch.zeros(encoder_layers, encoder_heads).to(device),
         "encoder_decoder": torch.zeros(decoder_layers, decoder_heads).to(device),
@@ -250,7 +273,7 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
               for attn_type, val in head_importance.items()}
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Compute gradients
-        log_output = trainer.train_step(samples)
+        log_output = trainer.prune_step(samples)
         # Retrieve importance scores for the encoder
         for layer in range(encoder_layers):
             self_attn_variables = trainer.model.encoder.layers[layer].self_attn_variables
@@ -287,10 +310,10 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     for attn_type in denoms:
         head_importance[attn_type] /= denoms[attn_type]
     # Normalize by layer
-    for attn_type, importance in head_importance:
-        for layer in range(importance.size(0)):
-            head_importance[attn_type][layer] /= torch.sqrt(
-                (importance**2).sum())
+    if args.normalize_by_layer:
+        for attn_type, importance in head_importance.items():
+            for layer in range(importance.size(0)):
+                head_importance[attn_type][layer] /= torch.sqrt((importance[layer]**2).sum())
     return {k: v.cpu() for k, v in head_importance.items()}
 
 
@@ -309,6 +332,7 @@ def add_pruning_args(parser):
     group = parser.add_argument_group('Pruning')
     group.add_argument('--n-pruning-steps', default=0, type=int, metavar='N',
                        help='Number of steps to estimate the head importance scores')
+    group.add_argument("--normalize-by-layer", action="store_true")
 
 
 if __name__ == '__main__':

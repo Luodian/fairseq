@@ -197,14 +197,12 @@ class MultiheadAttention(nn.Module):
             scale = 1
             if self.mask_head_rescale:
                 if self.mask_all_but_one_head:
-                    scale *= self.num_head
+                    scale *= self.num_heads
                 else:
-                    scale *= self.num_head / (self.num_head - 1)
+                    scale *= self.num_heads / (self.num_heads - 1)
             masked_value = scale if self.mask_all_but_one_head else 0
             not_masked_value = 0 if self.mask_all_but_one_head else scale
-            head_mask = attn_weights.new_full((bsz, self.num_heads), not_masked_value)
-            head_mask[:, mask_heads] = masked_value
-            head_mask = head_mask
+            head_mask = self.head_mask.to(attn_weights.device)
             if self.mask_head_rescale:
                 head_mask *= self.num_heads / head_mask.sum()
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) * head_mask
@@ -212,6 +210,7 @@ class MultiheadAttention(nn.Module):
 
         ctx = torch.bmm(attn_weights, v)
         save_ctx = ctx.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        ctx = save_ctx.view(bsz * self.num_heads, tgt_len, self.head_dim)
         assert list(ctx.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if (self.onnx_trace and ctx.size(1) == 1):
             # when ONNX tracing a single decoder step (sequence length == 1)
