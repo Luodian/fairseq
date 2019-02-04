@@ -44,7 +44,7 @@ def eval_bleu_score(
     results = translate_corpus(
         translator,
         task,
-        input_feed=eval_data.src,
+        input_feed=[eval_data.src.get_original_text(i) for i in range(len(eval_data.src))],
         buffer_size=buffer_size,
         replace_unk=replace_unk,
         use_cuda=use_cuda,
@@ -56,9 +56,11 @@ def eval_bleu_score(
         max_tokens=max_tokens,
     )
 
-    out = [result.out_str for result in results]
-    ref = eval_data.tgt
+    out = [result.hypos[0].split("\t")[-1] for result in results]
+    ref = [eval_data.tgt.get_original_text(i) for i in range(len(eval_data.tgt))]
 
+    print(len(out))
+    print(len(ref))
     return sacrebleu.corpus_bleu(out, [ref])
 
 
@@ -76,7 +78,7 @@ def main(args):
     task = tasks.setup_task(args)
 
     # Load dataset splits
-    load_dataset_splits(task, ['train'])
+    load_dataset_splits(task, ['train', "valid"])
 
     # Build model and criterion
     model = task.build_model(args)
@@ -117,6 +119,24 @@ def main(args):
         num_shards=args.distributed_world_size,
         shard_id=args.distributed_rank,
     )
+    # Initial BLEU
+    bleu = eval_bleu_score(
+        model,
+        task,
+        task.dataset(args.valid_subset),
+        beam=args.beam,
+        replace_unk=args.replace_unk,
+        lenpen=args.lenpen,
+        buffer_size=100,
+        use_cuda=torch.cuda.is_available() and not args.cpu,
+        remove_bpe=args.remove_bpe,
+        max_sentences=args.max_sentences,
+        max_tokens=args.max_tokens,
+        stop_early=not args.no_early_stop,
+        normalize_scores=not args.unnormalized,
+        min_len=args.min_len,
+    )
+    print(f"BLEU score: \t{bleu.score:.2f}")
 
     # Load the latest checkpoint if one is available
     if not load_checkpoint(args, trainer, epoch_itr):
