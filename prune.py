@@ -11,6 +11,56 @@ from train import (
 )
 from itertools import islice
 
+from fairseq.sequence_generator import SequenceGenerator
+from interactive import translate_corpus, parse_head_pruning_descriptors, mask_heads
+from math import ceil
+import sacrebleu
+
+
+def eval_bleu_score(
+    model,
+    task,
+    eval_data,
+    beam=5,
+    replace_unk=True,
+    lenpen=1.0,
+    buffer_size=100,
+    use_cuda=True,
+    remove_bpe=False,
+    max_sentences=32,
+    max_tokens=9999,
+    stop_early=True,
+    normalize_scores=True,
+    min_len=2,
+):
+    # Initialize generator
+    translator = SequenceGenerator(
+        [model], task.target_dictionary, beam_size=beam, minlen=min_len,
+        stop_early=stop_early, normalize_scores=normalize_scores,
+        len_penalty=lenpen,
+        sampling=False,
+    )
+
+    results = translate_corpus(
+        translator,
+        task,
+        input_feed=eval_data.src,
+        buffer_size=buffer_size,
+        replace_unk=replace_unk,
+        use_cuda=use_cuda,
+        print_directly=True,
+        nbest=1,
+        remove_bpe=remove_bpe,
+        print_alignment=False,
+        max_sentences=max_sentences,
+        max_tokens=max_tokens,
+    )
+
+    out = [result.out_str for result in results]
+    ref = eval_data.tgt
+
+    return sacrebleu.corpus_bleu(out, [ref])
+
 
 def main(args):
     if args.max_tokens is None:
@@ -78,19 +128,23 @@ def main(args):
     # Estimate head importance scores
     head_importance = estimate_head_importance(args, trainer, task, epoch_itr)
     prune_meter.stop()
-    print('| done estimating head importance in {:.1f} seconds'.format(prune_meter.sum))
+    print('| done estimating head importance in {:.1f} seconds'.format(
+        prune_meter.sum))
 
     # Print
     print("Head importances")
     print("Encoder self attention")
     for layer in range(head_importance["encoder_self"].size(0)):
-        print("\t".join(f"{x:.5f}" for x in head_importance["encoder_self"][layer]))
+        print(
+            "\t".join(f"{x:.5f}" for x in head_importance["encoder_self"][layer]))
     print("Encoder decoder attention")
     for layer in range(head_importance["encoder_decoder"].size(0)):
-        print("\t".join(f"{x:.5f}" for x in head_importance["encoder_decoder"][layer]))
+        print(
+            "\t".join(f"{x:.5f}" for x in head_importance["encoder_decoder"][layer]))
     print("Decoder self attention")
     for layer in range(head_importance["decoder_self"].size(0)):
-        print("\t".join(f"{x:.5f}" for x in head_importance["decoder_self"][layer]))
+        print(
+            "\t".join(f"{x:.5f}" for x in head_importance["decoder_self"][layer]))
     # Print sorted pruning profile
     encoder_self_profile = get_profile(head_importance["encoder_self"], prefix="E")
     encoder_decoder_profile = get_profile(head_importance["encoder_decoder"], prefix="A")
@@ -105,6 +159,38 @@ def main(args):
     print(" ".join(p for p, _ in sorted_profiles))
     print("Sorted head importance scores:")
     print(" ".join(f"{v.data:.5f}" for _, v in sorted_profiles))
+
+    encoder_layers = trainer.args.encoder_layers
+    decoder_layers = trainer.args.decoder_layers
+    encoder_heads = trainer.args.encoder_attention_heads
+    decoder_heads = trainer.args.decoder_attention_heads
+    tot_n_heads = encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
+    # Eval pruning
+    for i in range(10):
+        n_to_prune = int(ceil(tot_n_heads * i / 10))
+        to_prune_profile = [p for p, _ in sorted_profiles[:n_to_prune]]
+        to_prune = parse_head_pruning_descriptors(
+            to_prune_profile, reverse_descriptors=False)
+        print(f"Evaluating following profile: \t{' '.join(to_prune_profile)}")
+        # Apply pruning
+        mask_heads(model, to_prune, args.transformer_mask_rescale)
+        bleu = eval_bleu_score(
+            model,
+            task,
+            task.dataset(args.valid_subset),
+            beam=args.beam,
+            replace_unk=args.replace_unk,
+            lenpen=args.lenpen,
+            buffer_size=100,
+            use_cuda=torch.cuda.is_available() and not args.cpu,
+            remove_bpe=args.remove_bpe,
+            max_sentences=args.max_sentences,
+            max_tokens=args.max_tokens,
+            stop_early=not args.no_early_stop,
+            normalize_scores=not args.unnormalized,
+            min_len=args.min_len,
+        )
+        print(f"BLEU score: \t{bleu.score:.2f}")
 
 
 def get_profile(importances, prefix):
@@ -163,7 +249,8 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
         "decoder_self": torch.zeros(decoder_layers, decoder_heads).to(device),
     }
     # Denominators to normalize properly
-    denoms = {attn_type: val.clone() for attn_type, val in head_importance.items()}
+    denoms = {attn_type: val.clone()
+              for attn_type, val in head_importance.items()}
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Compute gradients
         log_output = trainer.prune_step(samples)
@@ -231,6 +318,7 @@ def add_pruning_args(parser):
 if __name__ == '__main__':
     parser = options.get_training_parser()
     add_pruning_args(parser)
+    options.add_generation_args(parser)
     args = options.parse_args_and_arch(parser)
 
     if args.distributed_port > 0 or args.distributed_init_method is not None:

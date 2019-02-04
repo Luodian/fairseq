@@ -20,12 +20,15 @@ from fairseq.sequence_generator import SequenceGenerator
 
 
 Batch = namedtuple('Batch', 'srcs tokens lengths')
-Translation = namedtuple('Translation', 'src_str hypos pos_scores alignments')
+Translation = namedtuple(
+    'Translation', 'src_str hypos pos_scores alignments out_str')
 
 
-def buffered_read(buffer_size):
+def buffered_read(buffer_size, input_feed=None):
+    if input_feed is None:
+        input_feed = sys.stdin
     buffer = []
-    for src_str in sys.stdin:
+    for src_str in input_feed:
         buffer.append(src_str.strip())
         if len(buffer) >= buffer_size:
             yield buffer
@@ -35,16 +38,18 @@ def buffered_read(buffer_size):
         yield buffer
 
 
-def make_batches(lines, args, task, max_positions):
+def make_batches(lines, task, max_positions, max_sentences, max_tokens):
     tokens = [
-        tokenizer.Tokenizer.tokenize(src_str, task.source_dictionary, add_if_not_exist=False).long()
+        tokenizer.Tokenizer.tokenize(
+            src_str, task.source_dictionary, add_if_not_exist=False).long()
         for src_str in lines
     ]
     lengths = np.array([t.numel() for t in tokens])
     itr = task.get_batch_iterator(
-        dataset=data.LanguagePairDataset(tokens, lengths, task.source_dictionary),
-        max_tokens=args.max_tokens,
-        max_sentences=args.max_sentences,
+        dataset=data.LanguagePairDataset(
+            tokens, lengths, task.source_dictionary),
+        max_tokens=max_tokens,
+        max_sentences=max_sentences,
         max_positions=max_positions,
     ).next_epoch_itr(shuffle=False)
     for batch in itr:
@@ -95,6 +100,148 @@ def get_attn_layer(model, attn_type, layer):
         return model.decoder.layers[layer].encoder_attn
 
 
+def make_result(src_str, hypos, align_dict, tgt_dict, nbest=1, remove_bpe=False, print_alignment=False):
+    result = Translation(
+        src_str='O\t{}'.format(src_str),
+        hypos=[],
+        pos_scores=[],
+        alignments=[],
+    )
+    # Process top predictions
+    for i, hypo in enumerate(hypos[:min(len(hypos), nbest)]):
+        hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
+            hypo_tokens=hypo['tokens'].int().cpu(),
+            src_str=src_str,
+            alignment=hypo['alignment'].int().cpu(
+            ) if hypo['alignment'] is not None else None,
+            align_dict=align_dict,
+            tgt_dict=tgt_dict,
+            remove_bpe=remove_bpe,
+        )
+        # Save the best output
+        if i == 0:
+            result.out_str = hypo_str
+        # Now all hypos
+        result.hypos.append('H\t{}\t{}'.format(hypo['score'], hypo_str))
+        result.pos_scores.append('P\t{}'.format(
+            ' '.join(map(
+                lambda x: '{:.4f}'.format(x),
+                hypo['positional_scores'].tolist(),
+            ))
+        ))
+        result.alignments.append(
+            'A\t{}'.format(
+                ' '.join(map(lambda x: str(utils.item(x)), alignment)))
+            if print_alignment else None
+        )
+    return result
+
+
+def process_batch(
+    translator,
+    batch,
+    align_dict,
+    tgt_dict,
+    use_cuda=False,
+    nbest=1,
+    remove_bpe=False,
+    print_alignment=False,
+):
+    tokens = batch.tokens
+    lengths = batch.lengths
+
+    if use_cuda:
+        tokens = tokens.cuda()
+        lengths = lengths.cuda()
+
+    encoder_input = {'src_tokens': tokens, 'src_lengths': lengths}
+    translations = translator.generate(
+        encoder_input,
+        maxlen=int(args.max_len_a * tokens.size(1) + args.max_len_b),
+    )
+
+    batch_results = [
+        make_result(
+            batch.srcs[i],
+            t,
+            align_dict,
+            tgt_dict,
+            nbest=nbest,
+            remove_bpe=remove_bpe,
+            print_alignment=print_alignment,
+        ) for i, t in enumerate(translations)
+    ]
+    return batch_results
+
+
+def mask_heads(model, to_prune, rescale=False):
+    for attn_type in to_prune:
+        for layer, heads in to_prune[attn_type].items():
+            attn_layer = get_attn_layer(model, attn_type, layer)
+            attn_layer.mask_head = heads
+            attn_layer.mask_head_rescale = rescale
+            attn_layer._head_mask = None
+
+
+def translate_corpus(
+    translator,
+    task,
+    input_feed=None,
+    buffer_size=1,
+    replace_unk=False,
+    use_cuda=False,
+    print_directly=False,
+    nbest=1,
+    remove_bpe=False,
+    print_alignment=False,
+    max_sentences=1,
+    max_tokens=9999,
+):
+    # Load alignment dictionary for unknown word replacement
+    # (None if no unknown word replacement, empty if no path to align dictionary)
+    align_dict = utils.load_align_dict(replace_unk)
+
+    max_positions = utils.resolve_max_positions(
+        task.max_positions(),
+        *[model.max_positions() for model in translator.models]
+    )
+    if input_feed is None:
+        input_feed = sys.stdin
+
+    if buffer_size > 1:
+        print('| Sentence buffer size:', buffer_size)
+    print('| Type the input sentence and press return:')
+    all_results = []
+    for inputs in buffered_read(buffer_size):
+        indices = []
+        results = []
+        for batch, batch_indices in make_batches(inputs, task, max_positions, max_sentences, max_tokens):
+            indices.extend(batch_indices)
+            results += process_batch(
+                translator,
+                batch,
+                align_dict,
+                task.target_dictionary,
+                use_cuda=use_cuda,
+                nbest=nbest,
+                remove_bpe=remove_bpe,
+                print_alignment=print_alignment,
+            )
+        # Sort results
+        results = [results[i] for i in np.argsort(indices)]
+        # Print to stdout
+        if print_directly:
+            for result in results:
+                print(result.src_str)
+                for hypo, pos_scores, align in zip(result.hypos, result.pos_scores, result.alignments):
+                    print(hypo)
+                    print(pos_scores)
+                    if align is not None:
+                        print(align)
+        all_results.extend(results)
+    return all_results
+
+
 def main(args):
     if args.buffer_size < 1:
         args.buffer_size = 1
@@ -143,12 +290,7 @@ def main(args):
         )
         print(to_prune)
         # Apply pruning
-        for attn_type in to_prune:
-            for layer, heads in to_prune[attn_type].items():
-                attn_layer = get_attn_layer(model, attn_type, layer)
-                attn_layer.mask_heads = heads
-                attn_layer.mask_head_rescale = args.transformer_mask_rescale
-                attn_layer._head_mask = None
+        mask_heads(model, to_prune, args.transformer_mask_rescale)
 
     # Initialize generator
     translator = SequenceGenerator(
@@ -162,80 +304,19 @@ def main(args):
     if use_cuda:
         translator.cuda()
 
-    # Load alignment dictionary for unknown word replacement
-    # (None if no unknown word replacement, empty if no path to align dictionary)
-    align_dict = utils.load_align_dict(args.replace_unk)
-
-    def make_result(src_str, hypos):
-        result = Translation(
-            src_str='O\t{}'.format(src_str),
-            hypos=[],
-            pos_scores=[],
-            alignments=[],
-        )
-
-        # Process top predictions
-        for hypo in hypos[:min(len(hypos), args.nbest)]:
-            hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
-                hypo_tokens=hypo['tokens'].int().cpu(),
-                src_str=src_str,
-                alignment=hypo['alignment'].int().cpu() if hypo['alignment'] is not None else None,
-                align_dict=align_dict,
-                tgt_dict=tgt_dict,
-                remove_bpe=args.remove_bpe,
-            )
-            result.hypos.append('H\t{}\t{}'.format(hypo['score'], hypo_str))
-            result.pos_scores.append('P\t{}'.format(
-                ' '.join(map(
-                    lambda x: '{:.4f}'.format(x),
-                    hypo['positional_scores'].tolist(),
-                ))
-            ))
-            result.alignments.append(
-                'A\t{}'.format(' '.join(map(lambda x: str(utils.item(x)), alignment)))
-                if args.print_alignment else None
-            )
-        return result
-
-    def process_batch(batch):
-        tokens = batch.tokens
-        lengths = batch.lengths
-
-        if use_cuda:
-            tokens = tokens.cuda()
-            lengths = lengths.cuda()
-
-        encoder_input = {'src_tokens': tokens, 'src_lengths': lengths}
-        translations = translator.generate(
-            encoder_input,
-            maxlen=int(args.max_len_a * tokens.size(1) + args.max_len_b),
-        )
-
-        return [make_result(batch.srcs[i], t) for i, t in enumerate(translations)]
-
-    max_positions = utils.resolve_max_positions(
-        task.max_positions(),
-        *[model.max_positions() for model in models]
+    translate_corpus(
+        translator,
+        task,
+        buffer_size=args.buffer_size,
+        replace_unk=args.replace_unk,
+        use_cuda=use_cuda,
+        print_directly=True,
+        nbest=args.nbest,
+        remove_bpe=args.remove_bpe,
+        print_alignment=args.print_alignment,
+        max_sentences=args.max_sentences,
+        max_tokens=args.max_tokens,
     )
-
-    if args.buffer_size > 1:
-        print('| Sentence buffer size:', args.buffer_size)
-    print('| Type the input sentence and press return:')
-    for inputs in buffered_read(args.buffer_size):
-        indices = []
-        results = []
-        for batch, batch_indices in make_batches(inputs, args, task, max_positions):
-            indices.extend(batch_indices)
-            results += process_batch(batch)
-
-        for i in np.argsort(indices):
-            result = results[i]
-            print(result.src_str)
-            for hypo, pos_scores, align in zip(result.hypos, result.pos_scores, result.alignments):
-                print(hypo)
-                print(pos_scores)
-                if align is not None:
-                    print(align)
 
 
 if __name__ == '__main__':
