@@ -50,11 +50,11 @@ class Trainer(object):
         self._optimizer = None
         self._wrapped_model = None
 
-        if args.freeze_decoder:
+        if getattr(args, "freeze_decoder", False):
             print('| Freezing decoder weight')
             for p in self._model.decoder.parameters():
                 p.requires_grad = False
-        if args.freeze_embeddings:
+        if getattr(args, "freeze_embeddings", False):
             print('| Freezing embedding layers')
             # Freeze source embeddings
             self._model.encoder.embed_tokens.weight.requires_grad = False
@@ -363,7 +363,7 @@ class Trainer(object):
             ignore_results = False
 
         try:
-            loss, sample_size, logging_output = self.task.prune_step(
+            sample_size, logging_output = self.task.prune_step(
                 sample, self.model, self.criterion,
             )
         except RuntimeError as e:

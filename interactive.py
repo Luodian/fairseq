@@ -68,6 +68,7 @@ def parse_head_pruning_descriptors(
         "D": {},
     }
     for descriptor in descriptors:
+        print(descriptor)
         attn_type, layer, heads = descriptor.split(":")
         layer = int(layer) - 1
         heads = set(int(head) - 1 for head in heads.split(","))
@@ -133,19 +134,20 @@ def main(args):
         if args.fp16:
             model.half()
 
-    if args.transformer_mask_head is not None:
+    if len(args.transformer_mask_heads) > 0:
         # Determine which head to prune
         to_prune = parse_head_pruning_descriptors(
-            args.transformer_mask_head,
+            args.transformer_mask_heads,
             reverse_descriptors=args.transformer_mask_all_but_one_head,
-            n_heads=model.encoder.args.encoder_attention_heads
+            n_heads=model.encoder.layers[0].self_attn.num_heads
         )
+        print(to_prune)
         # Apply pruning
         for attn_type in to_prune:
             for layer, heads in to_prune[attn_type].items():
                 attn_layer = get_attn_layer(model, attn_type, layer)
-                attn_layer.mask_head = heads
-                attn_layer.mask_head_rescale = args.args.transformer_mask_rescale
+                attn_layer.mask_heads = heads
+                attn_layer.mask_head_rescale = args.transformer_mask_rescale
                 attn_layer._head_mask = None
 
     # Initialize generator

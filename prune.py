@@ -26,7 +26,7 @@ def main(args):
     task = tasks.setup_task(args)
 
     # Load dataset splits
-    load_dataset_splits(task, ['train', 'valid'])
+    load_dataset_splits(task, ['train'])
 
     # Build model and criterion
     model = task.build_model(args)
@@ -95,12 +95,16 @@ def main(args):
     encoder_self_profile = get_profile(head_importance["encoder_self"], prefix="E")
     encoder_decoder_profile = get_profile(head_importance["encoder_decoder"], prefix="A")
     decoder_self_profile = get_profile(head_importance["decoder_self"], prefix="D")
-    all_profiles = encoder_self_profile + encoder_decoder_profile + decoder_self_profile
+    # Join all
+    all_profiles = {}
+    all_profiles.update(encoder_self_profile)
+    all_profiles.update(encoder_decoder_profile)
+    all_profiles.update(decoder_self_profile)
     sorted_profiles = sorted(all_profiles.items(), key=lambda x: x[1])
     print("Heads sorted by importance:")
     print(" ".join(p for p, _ in sorted_profiles))
     print("Sorted head importance scores:")
-    print(" ".join(v for _, v in sorted_profiles))
+    print(" ".join(f"{v.data:.5f}" for _, v in sorted_profiles))
 
 
 def get_profile(importances, prefix):
@@ -117,12 +121,15 @@ def batch_head_importance(attn_variables):
     ctx = attn_variables["context"]
     mask = attn_variables["mask"]
     # Reverse mask
-    mask = torch.eq(mask, 0).float()
+    if mask is not None:
+        mask = torch.eq(mask, 0.0).float()
+    else:
+        mask = torch.ones(ctx.size(0), ctx.size(2)).to(ctx.device)
     # Context gradient
     d_ctx = ctx.grad
     # Take the absolute dot
     importance = torch.einsum(
-        "bhli, bhlj->bhl",
+        "bhli,bhlj->bhl",
         [ctx, d_ctx],
     )
     importance *= mask.unsqueeze(1)
@@ -149,7 +156,7 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     decoder_layers = trainer.args.decoder_layers
     encoder_heads = trainer.args.encoder_attention_heads
     decoder_heads = trainer.args.decoder_attention_heads
-    device = trainer.model.device
+    device = next(trainer.model.parameters()).device
     head_importance = {
         "encoder_self": torch.zeros(encoder_layers, encoder_heads).to(device),
         "encoder_decoder": torch.zeros(decoder_layers, decoder_heads).to(device),
@@ -159,7 +166,7 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     denoms = {attn_type: val.clone() for attn_type, val in head_importance.items()}
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Compute gradients
-        log_output = trainer.train_step(samples)
+        log_output = trainer.prune_step(samples)
         # Retrieve importance scores for the encoder
         for layer in range(encoder_layers):
             self_attn_variables = trainer.model.encoder.layers[layer].self_attn_variables
@@ -196,9 +203,10 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     for attn_type in denoms:
         head_importance[attn_type] /= denoms[attn_type]
     # Normalize by layer
-    for attn_type, importance in head_importance:
-        for layer in range(importance.size(0)):
-            head_importance[attn_type][layer] /= torch.sqrt((importance**2).sum())
+    if args.normalize_by_layer:
+        for attn_type, importance in head_importance.items():
+            for layer in range(importance.size(0)):
+                head_importance[attn_type][layer] /= torch.sqrt((importance[layer]**2).sum())
     return {k: v.cpu() for k, v in head_importance.items()}
 
 
@@ -217,6 +225,7 @@ def add_pruning_args(parser):
     group = parser.add_argument_group('Pruning')
     group.add_argument('--n-pruning-steps', default=0, type=int, metavar='N',
                        help='Number of steps to estimate the head importance scores')
+    group.add_argument("--normalize-by-layer", action="store_true")
 
 
 if __name__ == '__main__':
