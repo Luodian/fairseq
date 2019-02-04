@@ -145,6 +145,8 @@ def process_batch(
     nbest=1,
     remove_bpe=False,
     print_alignment=False,
+    max_len_a=0,
+    amx_len_b=200,
 ):
     tokens = batch.tokens
     lengths = batch.lengths
@@ -156,7 +158,7 @@ def process_batch(
     encoder_input = {'src_tokens': tokens, 'src_lengths': lengths}
     translations = translator.generate(
         encoder_input,
-        maxlen=int(args.max_len_a * tokens.size(1) + args.max_len_b),
+        maxlen=int(max_len_a * tokens.size(1) + max_len_b),
     )
 
     batch_results = [
@@ -281,7 +283,7 @@ def main(args):
             model.half()
 
     if args.transformer_mask_head is not None:
-        # Determine whic head to prune
+        # Determine which head to prune
         to_prune = parse_head_pruning_descriptors(
             args.transformer_mask_head,
             reverse_descriptors=args.transformer_mask_all_but_one_head,
