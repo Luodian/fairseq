@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import sys
 import collections
 import torch
 
@@ -33,6 +34,7 @@ def eval_bleu_score(
     normalize_scores=True,
     min_len=2,
 ):
+    print(len(task.target_dictionary))
     # Initialize generator
     translator = SequenceGenerator(
         [model], task.target_dictionary, beam_size=beam, minlen=min_len,
@@ -48,7 +50,7 @@ def eval_bleu_score(
         buffer_size=buffer_size,
         replace_unk=replace_unk,
         use_cuda=use_cuda,
-        print_directly=True,
+        print_directly=False,
         nbest=1,
         remove_bpe=remove_bpe,
         print_alignment=False,
@@ -57,11 +59,10 @@ def eval_bleu_score(
     )
 
     out = [result.hypos[0].split("\t")[-1] for result in results]
-    ref = [eval_data.tgt.get_original_text(i) for i in range(len(eval_data.tgt))]
+    ref = [(eval_data.tgt.get_original_text(i) + " ").replace(remove_bpe, "")
+           for i in range(len(eval_data.tgt))]
 
-    print(len(out))
-    print(len(ref))
-    return sacrebleu.corpus_bleu(out, [ref])
+    return sacrebleu.corpus_bleu(out, [ref], force=True, tokenize="none")
 
 
 def main(args):
@@ -119,25 +120,6 @@ def main(args):
         num_shards=args.distributed_world_size,
         shard_id=args.distributed_rank,
     )
-    # Initial BLEU
-    bleu = eval_bleu_score(
-        model,
-        task,
-        task.dataset(args.valid_subset),
-        beam=args.beam,
-        replace_unk=args.replace_unk,
-        lenpen=args.lenpen,
-        buffer_size=100,
-        use_cuda=torch.cuda.is_available() and not args.cpu,
-        remove_bpe=args.remove_bpe,
-        max_sentences=args.max_sentences,
-        max_tokens=args.max_tokens,
-        stop_early=not args.no_early_stop,
-        normalize_scores=not args.unnormalized,
-        min_len=args.min_len,
-    )
-    print(f"BLEU score: \t{bleu.score:.2f}")
-
     # Load the latest checkpoint if one is available
     if not load_checkpoint(args, trainer, epoch_itr):
         trainer.dummy_train_step([dummy_batch])
@@ -174,11 +156,14 @@ def main(args):
     all_profiles.update(encoder_self_profile)
     all_profiles.update(encoder_decoder_profile)
     all_profiles.update(decoder_self_profile)
-    sorted_profiles = sorted(all_profiles.items(), key=lambda x: x[1])
+    sorted_profiles = sorted(all_profiles.items(), key=lambda x: x[1], reverse=args.one_minus)
     print("Heads sorted by importance:")
     print(" ".join(p for p, _ in sorted_profiles))
     print("Sorted head importance scores:")
     print(" ".join(f"{v.data:.5f}" for _, v in sorted_profiles))
+
+    if args.only_importance:
+        return
 
     encoder_layers = trainer.args.encoder_layers
     decoder_layers = trainer.args.decoder_layers
@@ -186,7 +171,7 @@ def main(args):
     decoder_heads = trainer.args.decoder_attention_heads
     tot_n_heads = encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
     # Eval pruning
-    for i in range(10):
+    for i in range(0,10):
         n_to_prune = int(ceil(tot_n_heads * i / 10))
         to_prune_profile = [p for p, _ in sorted_profiles[:n_to_prune]]
         to_prune = parse_head_pruning_descriptors(
@@ -211,18 +196,19 @@ def main(args):
             min_len=args.min_len,
         )
         print(f"BLEU score: \t{bleu.score:.2f}")
+        sys.stdout.flush()
 
 
 def get_profile(importances, prefix):
     n_layers, n_heads = importances.size()
     return {
-        f"{prefix}:{layer}:{head}": importances[layer, head]
+        f"{prefix}:{layer+1}:{head+1}": importances[layer, head]
         for layer in range(n_layers)
         for head in range(n_heads)
     }
 
 
-def batch_head_importance(attn_variables):
+def batch_head_importance(attn_variables, one_minus=False):
     # Retrieve context (shape bsz x nheads x L x dhead) and mask (shape bsz x L)
     ctx = attn_variables["context"]
     mask = attn_variables["mask"]
@@ -239,7 +225,11 @@ def batch_head_importance(attn_variables):
         [ctx, d_ctx],
     )
     importance *= mask.unsqueeze(1)
-    importance = importance.abs().sum(-1).sum(0).detach()
+    importance = importance.sum(-1)
+    if one_minus:
+        layer_importance = importance.sum(1, keepdim=True)
+        importance = layer_importance - importance
+    importance = importance.abs().sum(0).detach()
     denom = mask.sum()
     return importance, denom
 
@@ -277,19 +267,19 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
         # Retrieve importance scores for the encoder
         for layer in range(encoder_layers):
             self_attn_variables = trainer.model.encoder.layers[layer].self_attn_variables
-            importance, denom = batch_head_importance(self_attn_variables)
+            importance, denom = batch_head_importance(self_attn_variables, one_minus=args.one_minus)
             head_importance["encoder_self"][layer] += importance
             denoms["encoder_self"][layer] += denom
         # Retrieve importance scores for the decoder
         for layer in range(decoder_layers):
             # Self attention
             self_attn_variables = trainer.model.decoder.layers[layer].self_attn_variables
-            importance, denom = batch_head_importance(self_attn_variables)
+            importance, denom = batch_head_importance(self_attn_variables, one_minus=args.one_minus)
             head_importance["decoder_self"][layer] += importance
             denoms["decoder_self"][layer] += denom
             # Encoder attention
             encoder_attn_variables = trainer.model.decoder.layers[layer].encoder_attn_variables
-            importance, denom = batch_head_importance(encoder_attn_variables)
+            importance, denom = batch_head_importance(encoder_attn_variables, one_minus=args.one_minus)
             head_importance["encoder_decoder"][layer] += importance
             denoms["encoder_decoder"][layer] += denom
         # log mid-epoch stats
@@ -311,9 +301,9 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
         head_importance[attn_type] /= denoms[attn_type]
     # Normalize by layer
     if args.normalize_by_layer:
-        for attn_type, importance in head_importance.items():
-            for layer in range(importance.size(0)):
-                head_importance[attn_type][layer] /= torch.sqrt((importance[layer]**2).sum())
+        for layer in range(encoder_layers):
+            for attn_type, importance in head_importance.items():
+                head_importance[attn_type][layer] /= torch.sqrt(torch.sum(importance[layer]**2))
     return {k: v.cpu() for k, v in head_importance.items()}
 
 
@@ -333,6 +323,8 @@ def add_pruning_args(parser):
     group.add_argument('--n-pruning-steps', default=0, type=int, metavar='N',
                        help='Number of steps to estimate the head importance scores')
     group.add_argument("--normalize-by-layer", action="store_true")
+    group.add_argument("--only-importance", action="store_true")
+    group.add_argument("--one-minus", action="store_true")
 
 
 if __name__ == '__main__':

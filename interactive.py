@@ -12,6 +12,7 @@ Translate raw text with a trained model. Batches data on-the-fly.
 from collections import namedtuple
 import numpy as np
 import sys
+import copy
 
 import torch
 
@@ -73,7 +74,6 @@ def parse_head_pruning_descriptors(
         "D": {},
     }
     for descriptor in descriptors:
-        print(descriptor)
         attn_type, layer, heads = descriptor.split(":")
         layer = int(layer) - 1
         heads = set(int(head) - 1 for head in heads.split(","))
@@ -177,7 +177,7 @@ def mask_heads(model, to_prune, rescale=False):
     for attn_type in to_prune:
         for layer, heads in to_prune[attn_type].items():
             attn_layer = get_attn_layer(model, attn_type, layer)
-            attn_layer.mask_head = heads
+            attn_layer.mask_heads = heads
             attn_layer.mask_head_rescale = rescale
             attn_layer._head_mask = None
 
@@ -220,7 +220,7 @@ def translate_corpus(
                 translator,
                 batch,
                 align_dict,
-                task.target_dictionary,
+                copy.deepcopy(task.target_dictionary),
                 use_cuda=use_cuda,
                 nbest=nbest,
                 remove_bpe=remove_bpe,
@@ -269,7 +269,7 @@ def main(args):
     )
 
     # Set dictionaries
-    tgt_dict = task.target_dictionary
+    tgt_dict = copy.deepcopy(task.target_dictionary)
 
     # Optimize ensemble for generation
     for model in models:

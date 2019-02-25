@@ -62,6 +62,9 @@ def main(args):
         args.max_tokens,
         args.max_sentences,
     ))
+    # Save initial model
+    initial = os.path.join(args.save_dir, "checkpoint_initial.pt")
+    trainer.save_checkpoint(initial, {})
 
     # Initialize dataloader
     epoch_itr = task.get_batch_iterator(
