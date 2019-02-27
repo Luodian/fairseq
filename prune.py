@@ -176,18 +176,11 @@ def main(args):
     if args.only_importance:
         return
 
-    encoder_layers = trainer.args.encoder_layers
-    decoder_layers = trainer.args.decoder_layers
-    encoder_heads = trainer.args.encoder_attention_heads
-    decoder_heads = trainer.args.decoder_attention_heads
-    tot_n_heads = len(sorted_profiles)#encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
+    tot_n_heads = len(sorted_profiles)
     # Eval pruning
-<<<<<<< HEAD
-    for i in range(0, 10):
-=======
     if args.one_head:
         kept_layers = set()
-        to_prune_profile =[]
+        to_prune_profile = []
         for p, _ in reversed(sorted_profiles):
             layer_name = ":".join(p.split(":")[:-1])
             if layer_name not in kept_layers:
@@ -220,8 +213,7 @@ def main(args):
         sys.stdout.flush()
         return
 
-    for i in range(0,10):
->>>>>>> 6bc6eeeaa08e0acb1768c4d12293f44ddea8fdff
+    for i in range(0, 10):
         n_to_prune = int(ceil(tot_n_heads * i / 10))
         to_prune_profile = [p for p, _ in sorted_profiles[:n_to_prune]]
         to_prune = parse_head_pruning_descriptors(
@@ -277,7 +269,6 @@ def batch_head_importance(attn_variables, one_minus=False):
         [ctx, d_ctx],
     )
     importance *= mask.unsqueeze(1)
-    #importance = importance.sum(-1)
     if one_minus:
         layer_importance = importance.sum(1, keepdim=True)
         importance = layer_importance - importance
