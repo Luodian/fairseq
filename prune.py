@@ -180,9 +180,48 @@ def main(args):
     decoder_layers = trainer.args.decoder_layers
     encoder_heads = trainer.args.encoder_attention_heads
     decoder_heads = trainer.args.decoder_attention_heads
-    tot_n_heads = encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
+    tot_n_heads = len(sorted_profiles)#encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
     # Eval pruning
+<<<<<<< HEAD
     for i in range(0, 10):
+=======
+    if args.one_head:
+        kept_layers = set()
+        to_prune_profile =[]
+        for p, _ in reversed(sorted_profiles):
+            layer_name = ":".join(p.split(":")[:-1])
+            if layer_name not in kept_layers:
+                kept_layers.add(layer_name)
+                continue
+            else:
+                to_prune_profile.insert(0, p)
+        to_prune = parse_head_pruning_descriptors(
+            to_prune_profile, reverse_descriptors=False)
+        print(f"Evaluating following profile: \t{' '.join(to_prune_profile)}")
+        # Apply pruning
+        mask_heads(model, to_prune, args.transformer_mask_rescale)
+        bleu = eval_bleu_score(
+            model,
+            task,
+            task.dataset(args.valid_subset),
+            beam=args.beam,
+            replace_unk=args.replace_unk,
+            lenpen=args.lenpen,
+            buffer_size=100,
+            use_cuda=torch.cuda.is_available() and not args.cpu,
+            remove_bpe=args.remove_bpe,
+            max_sentences=args.max_sentences,
+            max_tokens=args.max_tokens,
+            stop_early=not args.no_early_stop,
+            normalize_scores=not args.unnormalized,
+            min_len=args.min_len,
+        )
+        print(f"BLEU score: \t{bleu.score:.2f}")
+        sys.stdout.flush()
+        return
+
+    for i in range(0,10):
+>>>>>>> 6bc6eeeaa08e0acb1768c4d12293f44ddea8fdff
         n_to_prune = int(ceil(tot_n_heads * i / 10))
         to_prune_profile = [p for p, _ in sorted_profiles[:n_to_prune]]
         to_prune = parse_head_pruning_descriptors(
@@ -234,15 +273,15 @@ def batch_head_importance(attn_variables, one_minus=False):
     d_ctx = ctx.grad
     # Take the absolute dot
     importance = torch.einsum(
-        "bhli,bhlj->bhl",
+        "bhli,bhli->bhl",
         [ctx, d_ctx],
     )
     importance *= mask.unsqueeze(1)
-    importance = importance.sum(-1)
+    #importance = importance.sum(-1)
     if one_minus:
         layer_importance = importance.sum(1, keepdim=True)
         importance = layer_importance - importance
-    importance = importance.abs().sum(0).detach()
+    importance = importance.abs().sum(-1).sum(0).detach()
     denom = mask.sum()
     return importance, denom
 
@@ -437,11 +476,13 @@ def add_pruning_args(parser):
     group.add_argument("--normalize-by-layer", action="store_true")
     group.add_argument("--only-importance", action="store_true")
     group.add_argument("--one-minus", action="store_true")
+    group.add_argument("--one-head", action="store_true")
 
 
 if __name__ == '__main__':
     parser = options.get_training_parser()
     add_pruning_args(parser)
+    options.add_pruning_args(parser)
     options.add_generation_args(parser)
     args = options.parse_args_and_arch(parser)
 

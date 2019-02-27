@@ -332,10 +332,6 @@ def add_generation_args(parser):
                        help='strength of diversity penalty for Diverse Beam Search')
     group.add_argument('--print-alignment', action='store_true',
                        help='if set, uses attention feedback to compute and print alignment to source tokens')
-    group.add_argument('--transformer-mask-heads', type=str, nargs="*", metavar='{E,A,D}:L:H',default=[],
-                       help='')
-    group.add_argument('--transformer-mask-all-but-one-head', action='store_true', help='')
-    group.add_argument('--transformer-mask-rescale', action='store_true', help='')
     return group
 
 
@@ -343,6 +339,13 @@ def add_interactive_args(parser):
     group = parser.add_argument_group('Interactive')
     group.add_argument('--buffer-size', default=0, type=int, metavar='N',
                        help='read this many sentences into a buffer before processing them')
+
+def add_pruning_args(parser):
+    group = parser.add_argument_group('Pruning')
+    group.add_argument('--transformer-mask-heads', type=str, nargs="*", metavar='{E,A,D}:L:H',default=[],
+                       help='')
+    group.add_argument('--transformer-mask-all-but-one-head', action='store_true', help='')
+    group.add_argument('--transformer-mask-rescale', action='store_true', help='')
 
 
 def add_model_args(parser):
