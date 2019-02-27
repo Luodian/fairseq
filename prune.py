@@ -16,6 +16,7 @@ from fairseq.sequence_generator import SequenceGenerator
 from interactive import translate_corpus, parse_head_pruning_descriptors, mask_heads
 from math import ceil
 import sacrebleu
+import os
 
 
 def eval_bleu_score(
@@ -46,7 +47,8 @@ def eval_bleu_score(
     results = translate_corpus(
         translator,
         task,
-        input_feed=[eval_data.src.get_original_text(i) for i in range(len(eval_data.src))],
+        input_feed=[eval_data.src.get_original_text(
+            i) for i in range(len(eval_data.src))],
         buffer_size=buffer_size,
         replace_unk=replace_unk,
         use_cuda=use_cuda,
@@ -128,11 +130,13 @@ def main(args):
     prune_meter = StopwatchMeter()
     prune_meter.start()
     # Estimate head importance scores
-    head_importance = estimate_head_importance(args, trainer, task, epoch_itr)
+    head_importance, head_stats = estimate_head_importance(
+        args, trainer, task, epoch_itr)
     prune_meter.stop()
     print('| done estimating head importance in {:.1f} seconds'.format(
         prune_meter.sum))
-
+    torch.save(
+        head_stats, f"{os.path.dirname(args.restore_file)}/heads_stats.bin")
     # Print
     print("Head importances")
     print("Encoder self attention")
@@ -148,15 +152,22 @@ def main(args):
         print(
             "\t".join(f"{x:.5f}" for x in head_importance["decoder_self"][layer]))
     # Print sorted pruning profile
-    encoder_self_profile = get_profile(head_importance["encoder_self"], prefix="E")
-    encoder_decoder_profile = get_profile(head_importance["encoder_decoder"], prefix="A")
-    decoder_self_profile = get_profile(head_importance["decoder_self"], prefix="D")
+    encoder_self_profile = get_profile(
+        head_importance["encoder_self"], prefix="E")
+    encoder_decoder_profile = get_profile(
+        head_importance["encoder_decoder"], prefix="A")
+    decoder_self_profile = get_profile(
+        head_importance["decoder_self"], prefix="D")
     # Join all
     all_profiles = {}
     all_profiles.update(encoder_self_profile)
     all_profiles.update(encoder_decoder_profile)
     all_profiles.update(decoder_self_profile)
-    sorted_profiles = sorted(all_profiles.items(), key=lambda x: x[1], reverse=args.one_minus)
+    sorted_profiles = sorted(
+        all_profiles.items(),
+        key=lambda x: x[1],
+        reverse=args.one_minus
+    )
     print("Heads sorted by importance:")
     print(" ".join(p for p, _ in sorted_profiles))
     print("Sorted head importance scores:")
@@ -171,11 +182,13 @@ def main(args):
     decoder_heads = trainer.args.decoder_attention_heads
     tot_n_heads = encoder_layers * encoder_heads + 2 * decoder_layers * decoder_heads
     # Eval pruning
-    for i in range(0,10):
+    for i in range(0, 10):
         n_to_prune = int(ceil(tot_n_heads * i / 10))
         to_prune_profile = [p for p, _ in sorted_profiles[:n_to_prune]]
         to_prune = parse_head_pruning_descriptors(
-            to_prune_profile, reverse_descriptors=False)
+            to_prune_profile,
+            reverse_descriptors=False
+        )
         print(f"Evaluating following profile: \t{' '.join(to_prune_profile)}")
         # Apply pruning
         mask_heads(model, to_prune, args.transformer_mask_rescale)
@@ -211,7 +224,7 @@ def get_profile(importances, prefix):
 def batch_head_importance(attn_variables, one_minus=False):
     # Retrieve context (shape bsz x nheads x L x dhead) and mask (shape bsz x L)
     ctx = attn_variables["context"]
-    mask = attn_variables["mask"]
+    mask = attn_variables["out_mask"]
     # Reverse mask
     if mask is not None:
         mask = torch.eq(mask, 0.0).float()
@@ -232,6 +245,86 @@ def batch_head_importance(attn_variables, one_minus=False):
     importance = importance.abs().sum(0).detach()
     denom = mask.sum()
     return importance, denom
+
+
+def batch_head_stats(attn_variables):
+    # Retrieve context (shape bsz x nheads x L x dhead), mask (shape bsz x L) and weights (shape bsz x nheads x L x l)
+    ctx = attn_variables["context"].detach()
+    in_mask = attn_variables["in_mask"]
+    out_mask = attn_variables["out_mask"]
+    p = attn_variables["weights"].detach()
+    logp = torch.log(p)
+    device = p.device
+    # Results
+    results = {}
+    # Reverse mask
+    if in_mask is not None:
+        in_mask = torch.eq(in_mask, 0.0).float()
+    else:
+        in_mask = torch.ones(ctx.size(0), ctx.size(2)).to(ctx.device)
+    # Reverse mask
+    if out_mask is not None:
+        out_mask = torch.eq(out_mask, 0.0).float()
+    else:
+        out_mask = torch.ones(ctx.size(0), ctx.size(2)).to(ctx.device)
+
+    def reduce_head(x):
+        return (x * out_mask.unsqueeze(1)).sum(0).sum(-1).detach().cpu()
+
+    def reduce_head_pairs(x):
+        return (x * out_mask.unsqueeze(1).unsqueeze(1)).sum(0).sum(-1).detach().cpu()
+
+    # p_mask has shape bsz x -1 x L x -1
+    p_mask = in_mask.unsqueeze(1).unsqueeze(1)
+    # Entropy
+    plogp = p * logp
+    plogp[p_mask.eq(0)] = 0
+    H_p = -plogp.sum(-1)
+    results["entropy"] = reduce_head(H_p)
+    # Cross entropy
+    plogq = p.unsqueeze(1) * logp.unsqueeze(2)
+    plogq[p_mask.unsqueeze(1).eq(0)] = 0
+    H_pq = -plogq.sum(-1)
+    # Avg KL (bsz x nhead x L)
+    avg_KL = (H_pq - H_p.unsqueeze(2)).mean(2)
+    results["kl"] = reduce_head_pairs(avg_KL)
+    # avg output disagreement
+    out = ctx / (torch.sqrt((ctx ** 2).sum(-1, keepdims=True)) + 1e-20)
+    out_dis = torch.einsum("bild,bjld->bijl", [out, out]) / out.size(1)**2
+    results["out_dis"] = reduce_head_pairs(out_dis)
+    # avg attn disagreement
+    attn_dis = torch.einsum("bilk,bjlk->bijl", [p, p]) / p.size(1)**2
+    results["attn_dis"] = reduce_head_pairs(attn_dis)
+    # Avg attn offset
+    self_pos = torch.arange(p.size(2)).to(device).float().view(1, 1, -1)
+    attn_pos = p.argmax(dim=-1).float()
+    attn_offset = self_pos-attn_pos
+    results["attn_offset"] = reduce_head(attn_offset)
+    # Avg attn offset
+    attn_dist = torch.abs(attn_offset)
+    results["attn_dist"] = reduce_head(attn_dist)
+    # Avg squared attn offset
+    results["attn_offset_sq"] = reduce_head(attn_offset ** 2)
+    # Denominator
+    denom = out_mask.sum().detach().cpu().data
+    return results, denom
+
+
+def aggregate_stats(tot_stats, batch_stats):
+    keys = [
+        "entropy",
+        "kl",
+        "out_dis",
+        "attn_dis",
+        "attn_offset",
+        "attn_dist",
+        "attn_offset_sq"
+    ]
+    for key in keys:
+        if key not in tot_stats:
+            tot_stats[key] = batch_stats[key]
+        else:
+            tot_stats[key] += batch_stats[key]
 
 
 def estimate_head_importance(args, trainer, task, epoch_itr):
@@ -261,27 +354,41 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     # Denominators to normalize properly
     denoms = {attn_type: val.clone()
               for attn_type, val in head_importance.items()}
+    head_stats = {
+        attn_type: [{} for _ in range(val.size(0))]
+        for attn_type, val in head_importance.items()
+    }
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Compute gradients
         log_output = trainer.prune_step(samples)
         # Retrieve importance scores for the encoder
         for layer in range(encoder_layers):
             self_attn_variables = trainer.model.encoder.layers[layer].self_attn_variables
-            importance, denom = batch_head_importance(self_attn_variables, one_minus=args.one_minus)
+            importance, denom = batch_head_importance(
+                self_attn_variables, one_minus=args.one_minus)
             head_importance["encoder_self"][layer] += importance
             denoms["encoder_self"][layer] += denom
+            # Stats
+            aggregate_stats(head_stats["E"][layer],
+                            batch_head_stats(self_attn_variables)[0])
         # Retrieve importance scores for the decoder
         for layer in range(decoder_layers):
             # Self attention
             self_attn_variables = trainer.model.decoder.layers[layer].self_attn_variables
-            importance, denom = batch_head_importance(self_attn_variables, one_minus=args.one_minus)
+            importance, denom = batch_head_importance(
+                self_attn_variables, one_minus=args.one_minus)
             head_importance["decoder_self"][layer] += importance
             denoms["decoder_self"][layer] += denom
+            aggregate_stats(head_stats["D"][layer],
+                            batch_head_stats(self_attn_variables)[0])
             # Encoder attention
             encoder_attn_variables = trainer.model.decoder.layers[layer].encoder_attn_variables
-            importance, denom = batch_head_importance(encoder_attn_variables, one_minus=args.one_minus)
+            importance, denom = batch_head_importance(
+                encoder_attn_variables, one_minus=args.one_minus)
             head_importance["encoder_decoder"][layer] += importance
             denoms["encoder_decoder"][layer] += denom
+            aggregate_stats(head_stats["A"][layer],
+                            batch_head_stats(encoder_attn_variables)[0])
         # log mid-epoch stats
         stats = get_pruning_stats(trainer)
         for k, v in log_output.items():
@@ -299,12 +406,17 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     # Normalize by type
     for attn_type in denoms:
         head_importance[attn_type] /= denoms[attn_type]
+    # Normalize head stats
+    for attn_type in denoms:
+        for layer in range(len(head_stats[attn_type])):
+            head_stats[attn_type][layer] /= denoms[attn_type]
     # Normalize by layer
     if args.normalize_by_layer:
         for layer in range(encoder_layers):
             for attn_type, importance in head_importance.items():
-                head_importance[attn_type][layer] /= torch.sqrt(torch.sum(importance[layer]**2))
-    return {k: v.cpu() for k, v in head_importance.items()}
+                head_importance[attn_type][layer] /= torch.sqrt(
+                    torch.sum(importance[layer]**2))
+    return {k: v.cpu() for k, v in head_importance.items()}, head_stats
 
 
 def get_pruning_stats(trainer):

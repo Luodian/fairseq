@@ -322,9 +322,11 @@ class TransformerEncoder(FairseqEncoder):
         if not encoder_padding_mask.any():
             encoder_padding_mask = None
 
+        self.self_attns = []
         # encoder layers
         for layer in self.layers:
             x = layer(x, encoder_padding_mask)
+            self.self_attns.append(layer.self_attn_variables["weights"])
 
         if self.normalize:
             x = self.layer_norm(x)
@@ -483,6 +485,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None
+        self.attns = []
+        self.self_attns = []
 
         inner_states = [x]
 
@@ -496,6 +500,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 self_attn_mask=self.buffered_future_mask(x) if incremental_state is None else None,
             )
             inner_states.append(x)
+            self.attns.append(attn)
+            self.self_attns.append(layer.self_attn_variables["weights"])
 
         if self.normalize:
             x = self.layer_norm(x)
@@ -513,7 +519,12 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             else:
                 x = F.linear(x, self.embed_out)
 
-        return x, {'attn': attn, 'inner_states': inner_states}
+        return_values = {
+            'attn': attn,
+            'inner_states': inner_states,
+        }
+
+        return x, return_values
 
     def max_positions(self):
         """Maximum output length supported by the decoder."""
@@ -601,10 +612,17 @@ class TransformerEncoderLayer(nn.Module):
         """
         residual = x
         x = self.maybe_layer_norm(0, x, before=True)
-        x, weights, context = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+        x, weights, context = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=encoder_padding_mask,
+            need_weights=True,
+        )
         self.self_attn_variables["weights"] = weights
         self.self_attn_variables["context"] = context
-        self.self_attn_variables["mask"] = encoder_padding_mask
+        self.self_attn_variables["in_mask"] = encoder_padding_mask
+        self.self_attn_variables["out_mask"] = encoder_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(0, x, after=True)
@@ -706,12 +724,13 @@ class TransformerDecoderLayer(nn.Module):
             value=x,
             key_padding_mask=self_attn_padding_mask,
             incremental_state=incremental_state,
-            need_weights=False,
+            need_weights=True,
             attn_mask=self_attn_mask,
         )
         self.self_attn_variables["weights"] = weights
         self.self_attn_variables["context"] = context
-        self.self_attn_variables["mask"] = self_attn_padding_mask
+        self.self_attn_variables["in_mask"] = self_attn_padding_mask
+        self.self_attn_variables["out_mask"] = self_attn_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.self_attn_layer_norm, x, after=True)
@@ -733,11 +752,12 @@ class TransformerDecoderLayer(nn.Module):
                 key_padding_mask=encoder_padding_mask,
                 incremental_state=incremental_state,
                 static_kv=True,
-                need_weights=(not self.training and self.need_attn),
+                need_weights=True,  # (not self.training and self.need_attn),
             )
             self.encoder_attn_variables["weights"] = attn
             self.encoder_attn_variables["context"] = context
-            self.encoder_attn_variables["mask"] = self_attn_padding_mask
+            self.encoder_attn_variables["in_mask"] = encoder_padding_mask
+            self.encoder_attn_variables["out_mask"] = self_attn_padding_mask
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             x = self.maybe_layer_norm(self.encoder_attn_layer_norm, x, after=True)
