@@ -320,5 +320,6 @@ def main(args):
 
 if __name__ == '__main__':
     parser = options.get_generation_parser(interactive=True)
+    options.add_pruning_args(parser)
     args = options.parse_args_and_arch(parser)
     main(args)

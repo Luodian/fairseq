@@ -20,6 +20,56 @@ from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
 
+def get_attn_layer(model, attn_type, layer):
+    if attn_type == "E":
+        return model.encoder.layers[layer].self_attn
+    elif attn_type == "D":
+        return model.decoder.layers[layer].self_attn
+    elif attn_type == "A":
+        return model.decoder.layers[layer].encoder_attn
+
+
+def mask_heads(model, to_prune, rescale=False):
+    for attn_type in to_prune:
+        for layer, heads in to_prune[attn_type].items():
+            attn_layer = get_attn_layer(model, attn_type, layer)
+            attn_layer.mask_heads = heads
+            attn_layer.mask_head_rescale = rescale
+            attn_layer._head_mask = None
+
+
+
+
+def parse_head_pruning_descriptors(
+    descriptors,
+    reverse_descriptors=False,
+    n_heads=None
+):
+    """Returns a dictionary mapping layers to the set of heads to prune in
+    this layer (for each kind of attention)"""
+    to_prune = {
+        "E": {},
+        "A": {},
+        "D": {},
+    }
+    for descriptor in descriptors:
+        attn_type, layer, heads = descriptor.split(":")
+        layer = int(layer) - 1
+        heads = set(int(head) - 1 for head in heads.split(","))
+        if layer not in to_prune[attn_type]:
+            to_prune[attn_type][layer] = set()
+        to_prune[attn_type][layer].update(heads)
+    # Reverse
+    if reverse_descriptors:
+        if n_heads is None:
+            raise ValueError("You need to specify the total number of heads")
+        for attn_type in to_prune:
+            for layer, heads in to_prune[attn_type].items():
+                to_prune[attn_type][layer] = set([head for head in range(n_heads)
+                                                  if head not in heads])
+    return to_prune
+
+
 
 def main(args):
     if args.max_tokens is None:
@@ -62,6 +112,18 @@ def main(args):
         args.max_tokens,
         args.max_sentences,
     ))
+    # "Prune" heads (actually mask but shh...)
+    if len(args.transformer_mask_heads) > 0:
+        # Determine which head to prune
+        to_prune = parse_head_pruning_descriptors(
+            args.transformer_mask_heads,
+            reverse_descriptors=args.transformer_mask_all_but_one_head,
+            n_heads=model.encoder.layers[0].self_attn.num_heads
+        )
+        print(to_prune)
+        # Apply pruning
+        mask_heads(model, to_prune, args.transformer_mask_rescale)
+
     # Save initial model
     initial = os.path.join(args.save_dir, "checkpoint_initial.pt")
     trainer.save_checkpoint(initial, {})
@@ -314,7 +376,7 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
     if not end_of_epoch and args.keep_interval_updates > 0:
         # remove old checkpoints; checkpoints are sorted in descending order
         checkpoints = utils.checkpoint_paths(
-            args.save_dir, pattern=r'checkpoint_\d+_(\d+)\.pt')
+            args.save_dir, pattern=r'checkpoint(\d+)\.pt')
         for old_chk in checkpoints[args.keep_interval_updates:]:
             os.remove(old_chk)
 
@@ -362,6 +424,7 @@ def load_dataset_splits(task, splits):
 
 if __name__ == '__main__':
     parser = options.get_training_parser()
+    options.add_pruning_args(parser)
     args = options.parse_args_and_arch(parser)
 
     if args.distributed_port > 0 or args.distributed_init_method is not None:
