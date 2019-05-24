@@ -621,6 +621,7 @@ class TransformerEncoderLayer(nn.Module):
         )
         self.self_attn_variables["weights"] = weights
         self.self_attn_variables["context"] = context
+        self.self_attn_variables["attn"] = x.view(x.size(0), x.size(1), self.self_attn.num_heads, -1)
         self.self_attn_variables["in_mask"] = encoder_padding_mask
         self.self_attn_variables["out_mask"] = encoder_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -729,6 +730,7 @@ class TransformerDecoderLayer(nn.Module):
         )
         self.self_attn_variables["weights"] = weights
         self.self_attn_variables["context"] = context
+        self.self_attn_variables["attn"] = x.view(x.size(0), x.size(1), self.self_attn.num_heads, -1)
         self.self_attn_variables["in_mask"] = self_attn_padding_mask
         self.self_attn_variables["out_mask"] = self_attn_padding_mask
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -756,6 +758,7 @@ class TransformerDecoderLayer(nn.Module):
             )
             self.encoder_attn_variables["weights"] = attn
             self.encoder_attn_variables["context"] = context
+            self.encoder_attn_variables["attn"] = x.view(x.size(0), x.size(1), self.encoder_attn.num_heads, -1)
             self.encoder_attn_variables["in_mask"] = encoder_padding_mask
             self.encoder_attn_variables["out_mask"] = self_attn_padding_mask
             x = F.dropout(x, p=self.dropout, training=self.training)
@@ -770,6 +773,9 @@ class TransformerDecoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.final_layer_norm, x, after=True)
+        # Average attention
+        attn = attn.sum(dim=1) / self.encoder_attn.num_heads
+
         if self.onnx_trace:
             saved_state = self.self_attn._get_input_buffer(incremental_state)
             self_attn_state = saved_state["prev_key"], saved_state["prev_value"]
@@ -952,7 +958,7 @@ def transformer_iwslt_de_en(args):
     base_architecture(args)
 
 @register_model_architecture('transformer', 'transformer_iwslt_de_en_8head')
-def transformer_iwslt_de_en(args):
+def transformer_iwslt_de_en_8head(args):
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 512)
     args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
     args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 8)
@@ -965,6 +971,12 @@ def transformer_iwslt_de_en(args):
     #args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
     #args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
+
+@register_model_architecture('transformer', 'transformer_iwslt_de_en_8head_before')
+def transformer_iwslt_de_en_8head_before(args):
+    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
+    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
+    transformer_iwslt_de_en_8head(args)
 
 @register_model_architecture('transformer', 'transformer_iwslt_de_en_16head')
 def transformer_iwslt_de_en(args):

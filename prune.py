@@ -160,9 +160,12 @@ def main(args):
         head_importance["decoder_self"], prefix="D")
     # Join all
     all_profiles = {}
-    all_profiles.update(encoder_self_profile)
-    all_profiles.update(encoder_decoder_profile)
-    all_profiles.update(decoder_self_profile)
+    if not (args.decoder_self_only or args.encoder_decoder_only):
+        all_profiles.update(encoder_self_profile)
+    if not (args.encoder_self_only or args.decoder_self_only):
+        all_profiles.update(encoder_decoder_profile)
+    if not (args.encoder_self_only or args.encoder_decoder_only):
+        all_profiles.update(decoder_self_profile)
     sorted_profiles = sorted(
         all_profiles.items(),
         key=lambda x: x[1],
@@ -277,7 +280,7 @@ def batch_head_importance(attn_variables, one_minus=False):
     return importance, denom
 
 
-def batch_head_stats(attn_variables):
+def batch_head_stats(attn_variables, triu_masking=False):
     # Retrieve context (shape bsz x nheads x L x dhead), mask (shape bsz x L) and weights (shape bsz x nheads x L x l)
     ctx = attn_variables["context"].detach()
     in_mask = attn_variables["in_mask"]
@@ -287,11 +290,14 @@ def batch_head_stats(attn_variables):
     device = p.device
     # Results
     results = {}
+    # Triu mask for self att
+    triu_mask = torch.triu(p.new_ones((p.size(2), p.size(3))), 1).byte() 
     # Reverse mask
     if in_mask is not None:
         in_mask = torch.eq(in_mask, 0.0).float()
     else:
-        in_mask = torch.ones(ctx.size(0), ctx.size(2)).to(ctx.device)
+        in_mask = torch.ones(p.size(0), p.size(3)).to(ctx.device)
+
     # Reverse mask
     if out_mask is not None:
         out_mask = torch.eq(out_mask, 0.0).float()
@@ -304,22 +310,32 @@ def batch_head_stats(attn_variables):
     def reduce_head_pairs(x):
         return (x * out_mask.unsqueeze(1).unsqueeze(1)).sum(0).sum(-1).detach().cpu()
 
-    # p_mask has shape bsz x -1 x L x -1
+    # p_mask has shape bsz x -1 x -1 x l
     p_mask = in_mask.unsqueeze(1).unsqueeze(1)
     # Entropy
     plogp = p * logp
-    plogp[p_mask.eq(0)] = 0
+    plogp[p==0] = 0
+    if triu_masking:
+        plogp.masked_fill_(triu_mask.unsqueeze(0).unsqueeze(0), 0) 
+    #plogp.masked_fill_(p_mask.eq(0), 0)
     H_p = -plogp.sum(-1)
     results["entropy"] = reduce_head(H_p)
     # Cross entropy
-    plogq = p.unsqueeze(1) * logp.unsqueeze(2)
-    plogq[p_mask.unsqueeze(1).eq(0)] = 0
+    plogq = torch.einsum("bilk,bjlk->bijlk", [p, logp])
+    plogq.masked_fill_((p == 0).unsqueeze(1), 0)
+    if triu_masking:
+        plogq.masked_fill_(triu_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0), 0) 
     H_pq = -plogq.sum(-1)
     # Avg KL (bsz x nhead x L)
-    avg_KL = (H_pq - H_p.unsqueeze(2)).mean(2)
+    avg_KL = (H_pq - H_p.unsqueeze(2))
     results["kl"] = reduce_head_pairs(avg_KL)
+    if (results["kl"] == float('inf')).any():
+        print(triu_mask)
+        print(p)
+        print(avg_KL)
+        exit()
     # avg output disagreement
-    out = ctx / (torch.sqrt((ctx ** 2).sum(-1, keepdims=True)) + 1e-20)
+    out = ctx / (torch.sqrt((ctx ** 2).sum(-1, keepdim=True)) + 1e-20)
     out_dis = torch.einsum("bild,bjld->bijl", [out, out]) / out.size(1)**2
     results["out_dis"] = reduce_head_pairs(out_dis)
     # avg attn disagreement
@@ -327,14 +343,20 @@ def batch_head_stats(attn_variables):
     results["attn_dis"] = reduce_head_pairs(attn_dis)
     # Avg attn offset
     self_pos = torch.arange(p.size(2)).to(device).float().view(1, 1, -1)
-    attn_pos = p.argmax(dim=-1).float()
+    if triu_masking:
+        masked_p = torch.where(triu_mask.unsqueeze(0).unsqueeze(0), -p.new_ones(p.size()), p)
+    else:
+        masked_p = p
+    attn_pos = masked_p.argmax(dim=-1).float()
     attn_offset = self_pos-attn_pos
+    results["attn_pos"] = reduce_head(attn_pos)
     results["attn_offset"] = reduce_head(attn_offset)
     # Avg attn offset
     attn_dist = torch.abs(attn_offset)
     results["attn_dist"] = reduce_head(attn_dist)
     # Avg squared attn offset
     results["attn_offset_sq"] = reduce_head(attn_offset ** 2)
+    results["attn_pos_sq"] = reduce_head(attn_pos ** 2)
     # Denominator
     denom = out_mask.sum().detach().cpu().data
     return results, denom
@@ -347,8 +369,10 @@ def aggregate_stats(tot_stats, batch_stats):
         "out_dis",
         "attn_dis",
         "attn_offset",
+        "attn_pos",
         "attn_dist",
-        "attn_offset_sq"
+        "attn_offset_sq",
+        "attn_pos_sq",
     ]
     for key in keys:
         if key not in tot_stats:
@@ -399,7 +423,7 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
             head_importance["encoder_self"][layer] += importance
             denoms["encoder_self"][layer] += denom
             # Stats
-            aggregate_stats(head_stats["E"][layer],
+            aggregate_stats(head_stats["encoder_self"][layer],
                             batch_head_stats(self_attn_variables)[0])
         # Retrieve importance scores for the decoder
         for layer in range(decoder_layers):
@@ -409,15 +433,15 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
                 self_attn_variables, one_minus=args.one_minus)
             head_importance["decoder_self"][layer] += importance
             denoms["decoder_self"][layer] += denom
-            aggregate_stats(head_stats["D"][layer],
-                            batch_head_stats(self_attn_variables)[0])
+            aggregate_stats(head_stats["decoder_self"][layer],
+                            batch_head_stats(self_attn_variables, triu_masking=True)[0])
             # Encoder attention
             encoder_attn_variables = trainer.model.decoder.layers[layer].encoder_attn_variables
             importance, denom = batch_head_importance(
                 encoder_attn_variables, one_minus=args.one_minus)
             head_importance["encoder_decoder"][layer] += importance
             denoms["encoder_decoder"][layer] += denom
-            aggregate_stats(head_stats["A"][layer],
+            aggregate_stats(head_stats["encoder_decoder"][layer],
                             batch_head_stats(encoder_attn_variables)[0])
         # log mid-epoch stats
         stats = get_pruning_stats(trainer)
@@ -439,7 +463,8 @@ def estimate_head_importance(args, trainer, task, epoch_itr):
     # Normalize head stats
     for attn_type in denoms:
         for layer in range(len(head_stats[attn_type])):
-            head_stats[attn_type][layer] /= denoms[attn_type]
+            for key in head_stats[attn_type][layer]:
+                head_stats[attn_type][layer][key] /= denoms[attn_type].mean().cpu()
     # Normalize by layer
     if args.normalize_by_layer:
         for layer in range(encoder_layers):
@@ -468,6 +493,9 @@ def add_pruning_args(parser):
     group.add_argument("--only-importance", action="store_true")
     group.add_argument("--one-minus", action="store_true")
     group.add_argument("--one-head", action="store_true")
+    group.add_argument("--encoder-self-only", action="store_true", help="Only prune from the encoder self attention")
+    group.add_argument("--encoder-decoder-only", action="store_true", help="Only prune from the encoder decoder attention")
+    group.add_argument("--decoder-self-only", action="store_true", help="Only prune from the decoder self attention")
 
 
 if __name__ == '__main__':

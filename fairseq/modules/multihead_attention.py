@@ -76,7 +76,7 @@ class MultiheadAttention(nn.Module):
         return self._head_mask.view(1, self.num_heads, 1, 1)
 
     def forward(self, query, key, value, key_padding_mask=None, incremental_state=None,
-                need_weights=True, static_kv=False, attn_mask=None, mask_heads=None):
+                need_weights=True, avg_weights=False, static_kv=False, attn_mask=None, mask_heads=None):
         """Input shape: Time x Batch x Channel
 
         Self-attention can be implemented by passing in the same arguments for
@@ -223,7 +223,8 @@ class MultiheadAttention(nn.Module):
         if need_weights:
             # average attention weights over heads
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights.sum(dim=1) / self.num_heads
+            if avg_weights:
+                attn_weights = attn_weights.sum(dim=1) / self.num_heads
         else:
             attn_weights = None
 

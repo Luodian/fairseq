@@ -6,10 +6,29 @@
 # can be found in the PATENTS file in the same directory.
 
 import math
-
+import torch
 from fairseq import utils
 
 from . import FairseqCriterion, register_criterion
+
+
+def out_disagreement(attn_variables):
+    # Retrieve context (shape bsz x nheads x L x dhead), mask (shape bsz x L) and weights (shape bsz x nheads x L x l)
+    attn = attn_variables["attn"]
+    out_mask = attn_variables["out_mask"]
+
+    # Reverse mask
+    # if out_mask is not None:
+    #     out_mask = torch.eq(out_mask, 0.0).float()
+    # else:
+    out_mask = torch.ones(attn.size(0), attn.size(2)).to(attn.device)
+
+    # avg output disagreement
+    out = attn / (torch.sqrt((attn ** 2).sum(-1, keepdim=True)) + 1e-7)
+    out_dis = torch.einsum("blid,bljd->blij", [out, out])
+    # Reduce
+    out_dis = (out_dis * out_mask.unsqueeze(-1).unsqueeze(-1)).mean()
+    return out_dis
 
 
 @register_criterion('label_smoothed_cross_entropy')
@@ -24,6 +43,8 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         """Add criterion-specific arguments to the parser."""
         parser.add_argument('--label-smoothing', default=0., type=float, metavar='D',
                             help='epsilon for label smoothing, 0 means no label smoothing')
+        parser.add_argument('--disagreement-reg', default=0., type=float, metavar='D',
+                            help='Disagreement regularization')
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -57,6 +78,26 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             smooth_loss = smooth_loss.sum()
         eps_i = self.eps / lprobs.size(-1)
         loss = (1. - self.eps) * nll_loss + eps_i * smooth_loss
+        # Add disagreement regularization
+        if getattr(self.args, "disagreement_reg", 0.0) > 0:
+            alpha = getattr(self.args, "disagreement_reg", 0.0)
+            encoder_layers = self.args.encoder_layers
+            decoder_layers = self.args.decoder_layers
+            encoder_heads = self.args.encoder_attention_heads
+            decoder_heads = self.args.decoder_attention_heads
+            reg_loss = 0
+            for layer in range(encoder_layers):
+                self_attn_variables = model.encoder.layers[layer].self_attn_variables
+                reg_loss += out_disagreement(self_attn_variables)
+            # Retrieve importance scores for the decoder
+            for layer in range(decoder_layers):
+                # Self attention
+                self_attn_variables = model.decoder.layers[layer].self_attn_variables
+                reg_loss += out_disagreement(self_attn_variables)
+                encoder_attn_variables = model.decoder.layers[layer].encoder_attn_variables
+                reg_loss += out_disagreement(encoder_attn_variables)
+        loss += alpha * reg_loss
+
         return loss, nll_loss
 
     @staticmethod
