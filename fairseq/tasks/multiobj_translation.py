@@ -2,7 +2,7 @@ from . import register_task
 from .translation import TranslationTask, load_langpair_dataset
 
 
-@register_task('multiobj-translation')
+@register_task('multiobj_translation')
 class MultiObjTranslationTask(TranslationTask):
 
     def load_dataset(self, split, epoch=0, combine=False, **kwargs):
@@ -45,9 +45,9 @@ class MultiObjTranslationTask(TranslationTask):
         from fairseq.data import FairseqDataset
         if split not in self.datasets:
             raise KeyError('Dataset not loaded: ' + split)
-        if not isinstance(self.datasets[split], FairseqDataset):
-            raise TypeError(
-                'Datasets are expected to be of type FairseqDataset')
         if idx < 0 or idx >= len(self.args.data):
             raise ValueError(f'Invalid dataset idx: {idx}')
+        if not isinstance(self.datasets[split][idx], FairseqDataset):
+            raise TypeError(
+                'Datasets are expected to be of type FairseqDataset')
         return self.datasets[split][idx]

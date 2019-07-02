@@ -1,6 +1,6 @@
 from . import FairseqOptimizer, register_optimizer
 
-from .multiobj_optim import multiobj_optims
+from .multiobj import multiobj_optims
 
 
 @register_optimizer('multiobj_sgd')
@@ -19,6 +19,10 @@ class FairseqMultiObjSGD(FairseqOptimizer):
     @staticmethod
     def add_args(parser):
         """Add optimizer-specific arguments to the parser."""
+        parser.add_argument('--momentum', default=0.0, type=float, metavar='M',
+                            help='momentum factor')
+        parser.add_argument('--weight-decay', '--wd', default=0.0, type=float,
+                            metavar='WD', help='weight decay')
         parser.add_argument('--multiobj-optim-name',
                             default='avg', metavar='NAME')
         parser.add_argument('--always-project', action="store_true")

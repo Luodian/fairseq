@@ -75,7 +75,8 @@ class Trainer(object):
         if args.fp16:
             self.meters['loss_scale'] = AverageMeter()  # dynamic loss scale
         self.meters['wall'] = TimeMeter()      # wall time in seconds
-        self.meters['train_wall'] = StopwatchMeter()  # train wall time in seconds
+        # train wall time in seconds
+        self.meters['train_wall'] = StopwatchMeter()
 
     @property
     def model(self):
@@ -101,26 +102,31 @@ class Trainer(object):
         return self._lr_scheduler
 
     def _build_optimizer(self):
-        params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
+        params = list(filter(lambda p: p.requires_grad,
+                             self.model.parameters()))
         if self.args.fp16:
             if self.cuda and torch.cuda.get_device_capability(0)[0] < 7:
                 print('| WARNING: your device does NOT support faster training with --fp16, '
                       'please switch to FP32 which is likely to be faster')
             if self.args.memory_efficient_fp16:
-                self._optimizer = optim.MemoryEfficientFP16Optimizer.build_optimizer(self.args, params)
+                self._optimizer = optim.MemoryEfficientFP16Optimizer.build_optimizer(
+                    self.args, params)
             else:
-                self._optimizer = optim.FP16Optimizer.build_optimizer(self.args, params)
+                self._optimizer = optim.FP16Optimizer.build_optimizer(
+                    self.args, params)
         else:
             if self.cuda and torch.cuda.get_device_capability(0)[0] >= 7:
                 print('| NOTICE: your device may support faster training with --fp16')
             self._optimizer = optim.build_optimizer(self.args, params)
 
         if self.args.use_bmuf:
-            self._optimizer = optim.FairseqBMUF(self.args, params, self._optimizer)
+            self._optimizer = optim.FairseqBMUF(
+                self.args, params, self._optimizer)
 
         # We should initialize the learning rate scheduler immediately after
         # building the optimizer, so that the initial learning rate is set.
-        self._lr_scheduler = lr_scheduler.build_lr_scheduler(self.args, self.optimizer)
+        self._lr_scheduler = lr_scheduler.build_lr_scheduler(
+            self.args, self.optimizer)
         self._lr_scheduler.step_update(0)
 
     def save_checkpoint(self, filename, extra_state):
@@ -172,8 +178,10 @@ class Trainer(object):
                 'Optimizer does not match; please reset the optimizer (--reset-optimizer).'
 
             if not reset_lr_scheduler:
-                self.lr_scheduler.load_state_dict(last_optim['lr_scheduler_state'])
-            self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
+                self.lr_scheduler.load_state_dict(
+                    last_optim['lr_scheduler_state'])
+            self.optimizer.load_state_dict(
+                last_optim_state, optimizer_overrides)
 
             self.set_num_updates(last_optim['num_updates'])
 
@@ -200,7 +208,8 @@ class Trainer(object):
     def get_train_iterator(self, epoch, combine=True):
         """Return an EpochBatchIterator over the training set for a given epoch."""
         print('| loading train data for epoch {}'.format(epoch))
-        self.task.load_dataset(self.args.train_subset, epoch=epoch, combine=combine)
+        self.task.load_dataset(self.args.train_subset,
+                               epoch=epoch, combine=combine)
         return self.task.get_batch_iterator(
             dataset=self.task.dataset(self.args.train_subset),
             max_tokens=self.args.max_tokens,
@@ -334,19 +343,19 @@ class Trainer(object):
                 'return ntokens and nsentences'
             ).format(self.task.__class__.__name__))
 
-        # Skip update
-        if not update_params:
-            return logging_output
-        
         try:
             # normalize grads by sample size
             if sample_size > 0:
-                self.optimizer.multiply_grads(self.args.distributed_world_size / float(sample_size))
+                self.optimizer.multiply_grads(
+                    self.args.distributed_world_size / float(sample_size))
 
             # clip grads
             grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
             self._prev_grad_norm = grad_norm
 
+            # Skip update
+            if not update_params:
+                return logging_output
             # take an optimization step
             self.optimizer.step()
             self.set_num_updates(self.get_num_updates() + 1)
@@ -365,13 +374,15 @@ class Trainer(object):
             self.meters['clip'].update(
                 1. if grad_norm > self.args.clip_norm and self.args.clip_norm > 0 else 0.
             )
-            self.meters['train_loss'].update(logging_output.get('loss', 0), sample_size)
+            self.meters['train_loss'].update(
+                logging_output.get('loss', 0), sample_size)
             if 'train_acc' in self.meters:
                 self.meters['train_acc'].update(
                     logging_output.get('acc', 0), sample_size)
 
             if 'nll_loss' in logging_output:
-                self.meters['train_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+                self.meters['train_nll_loss'].update(
+                    logging_output.get('nll_loss', 0), ntokens)
         except OverflowError as e:
             print('| WARNING: overflow detected, ' + str(e))
             self.zero_grad()
@@ -438,13 +449,15 @@ class Trainer(object):
 
         # update meters for validation
         ntokens = logging_output.get('ntokens', 0)
-        self.meters['valid_loss'].update(logging_output.get('loss', 0), sample_size)
+        self.meters['valid_loss'].update(
+            logging_output.get('loss', 0), sample_size)
         if 'valid_acc' in self.meters:
             self.meters['valid_acc'].update(
                 logging_output.get('acc', 0), sample_size)
 
         if 'nll_loss' in logging_output:
-            self.meters['valid_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+            self.meters['valid_nll_loss'].update(
+                logging_output.get('nll_loss', 0), ntokens)
 
         return logging_output
 

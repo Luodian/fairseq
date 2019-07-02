@@ -1,4 +1,4 @@
-from .multiobj_sgd import MultiObjSGD
+from .multiobj_sgd_base import MultiObjSGD
 
 multiobj_optims = {}
 
@@ -21,3 +21,6 @@ def register_multiobj_optim(name):
         return cls
 
     return register_multiobj_optim_cls
+
+
+from . import multiobj_sgd_variants  # noqa

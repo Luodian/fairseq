@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import sys
 import collections
 import math
 import torch
@@ -8,9 +9,7 @@ from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
 from train import (
-    load_dataset_splits,
-    load_checkpoint,
-    save_checkpoint,
+    checkpoint_utils,
     validate,
     get_training_stats,
 )
@@ -27,7 +26,8 @@ def main(args, init_distributed=False):
         torch.cuda.set_device(args.device_id)
     torch.manual_seed(args.seed)
     if init_distributed:
-        args.distributed_rank = distributed_utils.distributed_init(args)
+        raise ValueError("Distibuted training not supported by multiobj "
+                         "training")
 
     # Print args
     print(args)
@@ -35,12 +35,24 @@ def main(args, init_distributed=False):
     # Setup task, e.g., translation, language modeling, etc.
     task = tasks.setup_task(args)
 
-    # Load valid dataset (we load training data below, based on the latest checkpoint)
+    # Load valid dataset (we load training data below, based on the latest
+    # checkpoint)
     for valid_sub_split in args.valid_subset.split(','):
         task.load_dataset(valid_sub_split, combine=False, epoch=0)
 
     # Build model and criterion
-    model = task.build_model(args)
+    if args.restore_file is not None:
+        # Load from checkpoint
+        print('| loading model from {}'.format(args.restore_file))
+        [model], _model_args = checkpoint_utils.load_model_ensemble(
+            [args.restore_file],
+            arg_overrides=eval(args.model_overrides),
+            task=task,
+        )
+    else:
+        # Or build model from scratch
+        model = task.build_model(args)
+    # Training criterion
     criterion = task.build_criterion(args)
     print(model)
     print('| model {}, criterion {}'.format(
@@ -61,7 +73,7 @@ def main(args, init_distributed=False):
     # Load the latest checkpoint if one is available and restore the
     # corresponding train iterator
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
-    
+
     # Load auxiliary data
     epoch_aux_itr = task.get_batch_iterator(
         dataset=task.dataset(args.train_subset),
@@ -77,7 +89,7 @@ def main(args, init_distributed=False):
         num_shards=args.distributed_world_size,
         shard_id=args.distributed_rank,
         num_workers=args.num_workers,
-        epoch=trainer.epoch,
+        epoch=0,
     )
 
     # Train until the learning rate gets too small
@@ -113,6 +125,11 @@ def main(args, init_distributed=False):
     print('| done training in {:.1f} seconds'.format(train_meter.sum))
 
 
+def print_gpu_stats():
+    print(f"Allocated: {torch.cuda.memory_allocated()/1e9:.1f}GB")
+    print(f"Cached: {torch.cuda.memory_cached()/1e9:.1f}GB")
+
+
 def train(args, trainer, task, epoch_itr, epoch_aux_itr):
     """Train the model for one epoch."""
     # Update parameters every N batches
@@ -142,10 +159,13 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
         # Record gradients from auxiliary data
         aux_samples = next(aux_itr)
         trainer.train_step(aux_samples, update_params=False)
-        # if hasattr(trainer.optimizer, "save_auxiliary"):
-        trainer.optimizer.save_auxiliary()
-
+        if hasattr(trainer.optimizer, "save_auxiliary"):
+            trainer.optimizer.save_auxiliary()
+        else:
+            print("Warning, the optimizer is ignoring the auxiliary gradients")
+        # Take a step on the primary task
         log_output = trainer.train_step(samples)
+
         if log_output is None:
             continue
 
@@ -195,94 +215,29 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
             meter.reset()
 
 
-def train(args, trainer, task, epoch_itr, epoch_aux_itr):
-    """Train the model for one epoch."""
-
-    # Update parameters every N batches
-    if epoch_itr.epoch <= len(args.update_freq):
-        update_freq = args.update_freq[epoch_itr.epoch - 1]
-    else:
-        update_freq = args.update_freq[-1]
-
-    # Initialize data iterator
-    itr = epoch_itr.next_epoch_itr(
-        fix_batches_to_gpus=args.fix_batches_to_gpus)
-    itr = iterators.GroupedIterator(itr, update_freq)
-    progress = progress_bar.build_progress_bar(
-        args, itr, epoch_itr.epoch, no_progress_bar='simple',
-    )
-
-    # Auxiliary iterator
-    aux_itr = epoch_aux_itr.next_epoch_itr(
-        fix_batches_to_gpus=args.fix_batches_to_gpus)
-    aux_itr = iterators.GroupedIterator(
-        aux_itr, update_freq, restart_when_done=True)
-
-    extra_meters = collections.defaultdict(lambda: AverageMeter())
-    first_valid = args.valid_subset.split(',')[0]
-    max_update = args.max_update or math.inf
-    for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
-        # Record gradients from auxiliary data
-        aux_samples = next(aux_itr)
-        trainer.train_step(aux_samples, update_params=False)
-        # if hasattr(trainer.optimizer, "save_constraints"):
-        trainer.optimizer.save_auxiliary()
-
-        log_output = trainer.train_step(samples)
-        if log_output is None:
-            continue
-
-        # log mid-epoch stats
-        stats = get_training_stats(trainer)
-        for k, v in log_output.items():
-            if k in ['loss', 'nll_loss', 'ntokens', 'nsentences', 'sample_size']:
-                continue  # these are already logged above
-            if 'loss' in k:
-                extra_meters[k].update(v, log_output['sample_size'])
-            else:
-                extra_meters[k].update(v)
-            stats[k] = extra_meters[k].avg
-        progress.log(stats)
-
-        # ignore the first mini-batch in words-per-second calculation
-        if i == 0:
-            trainer.get_meter('wps').reset()
-
-        num_updates = trainer.get_num_updates()
-        if args.save_interval_updates > 0 and num_updates % args.save_interval_updates == 0 and num_updates > 0:
-            valid_losses = validate(
-                args, trainer, task, epoch_itr, [first_valid])
-            save_checkpoint(args, trainer, epoch_itr, valid_losses[0])
-
-        if num_updates >= max_update:
-            break
-
-    # log end-of-epoch stats
-    stats = get_training_stats(trainer)
-    for k, meter in extra_meters.items():
-        stats[k] = meter.avg
-    progress.print(stats)
-
-    # reset training meters
-    for k in [
-        'train_loss', 'train_nll_loss', 'wps', 'ups', 'wpb', 'bsz', 'gnorm', 'clip',
-    ]:
-        meter = trainer.get_meter(k)
-        if meter is not None:
-            meter.reset()
-
-
-def add_multitask_args(parser):
-    mtt_group = parser.add_argument_group("Multitask related arguments")
-    mtt_group.add_argument("--freeze-embeddings", action="store_true",
+def add_multiobj_args(parser):
+    mto_group = parser.add_argument_group("Multi-objective related arguments")
+    mto_group.add_argument("--freeze-embeddings", action="store_true",
                            help="Freeze word embeddings when finetuning")
-    mtt_group.add_argument("--freeze-decoder", action="store_true",
+    mto_group.add_argument("--freeze-decoder", action="store_true",
                            help="Freeze decoder when finetuning")
+    mto_group.add_argument('--model-overrides', default="{}", type=str, metavar='DICT',
+                           help='a dictionary used to override model args at generation '
+                           'that were used during model training')
 
 
-if __name__ == '__main__':
+def cli_main():
+    # Horrible hack, please close your eyes and don't look
+    cli_args = set(sys.argv)
+    print("Command line argumetns")
+    print(cli_args)
+    if "--arch" not in cli_args and "-a" not in cli_args:
+        sys.argv.append("--arch")
+        sys.argv.append("transformer_iwslt_de_en")
+    print(cli_args)
+    # It's over now you can look
     parser = options.get_training_parser()
-    add_multitask_args(parser)
+    add_multiobj_args(parser)
     args = options.parse_args_and_arch(parser)
 
     if args.distributed_port > 0 or args.distributed_init_method is not None:
@@ -299,3 +254,7 @@ if __name__ == '__main__':
         multiprocessing_main(args)
     else:
         main(args)
+
+
+if __name__ == '__main__':
+    cli_main()
