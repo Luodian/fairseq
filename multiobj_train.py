@@ -49,9 +49,20 @@ def main(args, init_distributed=False):
             arg_overrides=eval(args.model_overrides),
             task=task,
         )
+        # Overwrite architecture arguments
+        # (this is very hacky but I don't know a better way)
+        for k, v in _model_args.__dict__.items():
+            is_model_argument = k == "arch"
+            is_model_argument |= k.startswith("encoder_")
+            is_model_argument |= k.startswith("decoder_")
+            is_model_argument |= k.startswith("share_")
+            is_model_argument |= k.startswith("adaptive_")
+            if hasattr(args, k) and is_model_argument:
+                setattr(args, k, v)
     else:
         # Or build model from scratch
         model = task.build_model(args)
+
     # Training criterion
     criterion = task.build_criterion(args)
     print(model)
@@ -76,7 +87,7 @@ def main(args, init_distributed=False):
 
     # Load auxiliary data
     epoch_aux_itr = task.get_batch_iterator(
-        dataset=task.dataset(args.train_subset),
+        dataset=task.dataset(args.train_subset, idx=1),
         max_tokens=args.max_tokens,
         max_sentences=args.max_sentences,
         max_positions=utils.resolve_max_positions(

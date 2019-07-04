@@ -155,4 +155,3 @@ class MultiObjSGD(Optimizer):
             p.data.add_(-lr, g)
 
         return loss
-
