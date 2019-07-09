@@ -21,6 +21,7 @@ import torch
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.meters import AverageMeter, StopwatchMeter, TimeMeter
 from fairseq.optim import lr_scheduler
+from fairseq.fisher_information import inverse_fisher_rotate
 
 
 class Trainer(object):
@@ -56,6 +57,8 @@ class Trainer(object):
         self._optimizer = None
         self._prev_grad_norm = None
         self._wrapped_model = None
+
+        self.fim = None
 
         self.init_meters(args)
 
@@ -227,7 +230,14 @@ class Trainer(object):
             epoch=epoch,
         )
 
-    def train_step(self, samples, dummy_batch=False, raise_oom=False, update_params=True):
+    def train_step(
+        self,
+        samples,
+        dummy_batch=False,
+        raise_oom=False,
+        update_params=True,
+        clip_grad=True
+    ):
         """Do forward, backward and parameter update."""
         if self._dummy_batch is None:
             self._dummy_batch = samples[0]
@@ -350,8 +360,12 @@ class Trainer(object):
                     self.args.distributed_world_size / float(sample_size))
 
             # clip grads
-            grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
-            self._prev_grad_norm = grad_norm
+            if clip_grad:
+                grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
+                self._prev_grad_norm = grad_norm
+
+            if self.args.inverse_fisher and self.fim is not None:
+                inverse_fisher_rotate(self.model.named_parameters(), self.fim)
 
             # Skip update
             if not update_params:

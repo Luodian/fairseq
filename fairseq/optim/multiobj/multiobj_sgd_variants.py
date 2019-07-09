@@ -25,11 +25,11 @@ class OrthoMultiObjSGD(MultiObjSGD):
     """Project the gradient g_p on the hyperplane orthogonal to aux_g_p"""
 
     def combine_gradients(self, g_p, aux_g_p):
-        c_unit = aux_g_p / (aux_g_p.norm(2) + 1e-10)
-        dot = (g_p * c_unit).sum()
+        aux_g_unit = aux_g_p / (aux_g_p.norm(2) + 1e-10)
+        dot = (g_p * aux_g_unit).sum()
         # Only project if the gradients have negative dot product
         if self.always_project or dot.data <= 0:
-            return g_p - dot * c_unit
+            return g_p - dot * aux_g_unit
         else:
             return g_p
 

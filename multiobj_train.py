@@ -8,6 +8,7 @@ from fairseq import options, progress_bar, tasks, utils
 from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
+from fairseq.fisher_information import estimate_diagonal_fisher
 from train import (
     checkpoint_utils,
     validate,
@@ -103,6 +104,33 @@ def main(args, init_distributed=False):
         epoch=0,
     )
 
+    # Estimate fisher if needed
+    if args.inverse_fisher:
+        fisher_itr = task.get_batch_iterator(
+            dataset=task.dataset(args.train_subset, idx=1),
+            max_tokens=args.max_tokens,
+            max_sentences=1,
+            max_positions=utils.resolve_max_positions(
+                task.max_positions(),
+                trainer.model.max_positions(),
+            ),
+            ignore_invalid_inputs=True,
+            required_batch_size_multiple=args.required_batch_size_multiple,
+            seed=args.seed,
+            num_shards=args.distributed_world_size,
+            shard_id=args.distributed_rank,
+            num_workers=args.num_workers,
+            epoch=0,
+        )
+        fim = estimate_diagonal_fisher(
+            args,
+            trainer,
+            fisher_itr,
+            args.n_fisher_samples,
+            precomputed=args.precomputed_fisher
+        )
+        trainer.fim = fim
+
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
@@ -126,8 +154,7 @@ def main(args, init_distributed=False):
 
         # save checkpoint
         if epoch_itr.epoch % args.save_interval == 0:
-            checkpoint_utils.save_checkpoint(
-                args, trainer, epoch_itr, valid_losses[0])
+            checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, None)
 
         if ':' in getattr(args, 'data', ''):
             # sharded data: get train iterator for next epoch
@@ -141,7 +168,7 @@ def print_gpu_stats():
     print(f"Cached: {torch.cuda.memory_cached()/1e9:.1f}GB")
 
 
-def train(args, trainer, task, epoch_itr, epoch_aux_itr):
+def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
     """Train the model for one epoch."""
     # Update parameters every N batches
     update_freq = args.update_freq[epoch_itr.epoch - 1] \
@@ -170,12 +197,13 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
         # Record gradients from auxiliary data
         aux_samples = next(aux_itr)
         trainer.train_step(aux_samples, update_params=False)
+        # Fisher
         if hasattr(trainer.optimizer, "save_auxiliary"):
             trainer.optimizer.save_auxiliary()
         else:
             print("Warning, the optimizer is ignoring the auxiliary gradients")
         # Take a step on the primary task
-        log_output = trainer.train_step(samples)
+        log_output = trainer.train_step(samples)\
 
         if log_output is None:
             continue
@@ -205,8 +233,7 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr):
         ):
             valid_losses = validate(
                 args, trainer, task, epoch_itr, valid_subsets)
-            checkpoint_utils.save_checkpoint(
-                args, trainer, epoch_itr, valid_losses[0])
+            checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, None)
 
         if num_updates >= max_update:
             break
@@ -232,6 +259,14 @@ def add_multiobj_args(parser):
                            help="Freeze word embeddings when finetuning")
     mto_group.add_argument("--freeze-decoder", action="store_true",
                            help="Freeze decoder when finetuning")
+    mto_group.add_argument("--inverse-fisher", action="store_true",
+                           help="Multiply gradients by the inverse diagonal"
+                           " empirical fisher information matrix")
+    mto_group.add_argument("--n-fisher-samples", type=int, default=100,
+                           help="Number of samples to estimate the Fisher "
+                           "matrix")
+    mto_group.add_argument("--precomputed-fisher", type=str,
+                           help="Cache the Fisher to a file")
     mto_group.add_argument('--model-overrides', default="{}", type=str, metavar='DICT',
                            help='a dictionary used to override model args at generation '
                            'that were used during model training')

@@ -26,6 +26,7 @@ class FairseqMultiObjSGD(FairseqOptimizer):
         parser.add_argument('--multiobj-optim-name',
                             default='avg', metavar='NAME')
         parser.add_argument('--always-project', action="store_true")
+        parser.add_argument('--full-gradient', action="store_true")
         parser.add_argument('--reverse-constraint', action="store_true")
 
     def save_auxiliary(self):
