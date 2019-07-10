@@ -105,7 +105,7 @@ def main(args, init_distributed=False):
     )
 
     # Estimate fisher if needed
-    if args.inverse_fisher:
+    if args.inverse_fisher or args.ewc > 0:
         fisher_itr = task.get_batch_iterator(
             dataset=task.dataset(args.train_subset, idx=1),
             max_tokens=args.max_tokens,
@@ -130,6 +130,9 @@ def main(args, init_distributed=False):
             precomputed=args.precomputed_fisher
         )
         trainer.fim = fim
+    # EWC
+    if args.ewc > 0.0:
+        trainer.prepare_ewc(args.ewc)
 
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
@@ -173,7 +176,7 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
     # Update parameters every N batches
     update_freq = args.update_freq[epoch_itr.epoch - 1] \
         if epoch_itr.epoch <= len(args.update_freq) else args.update_freq[-1]
-
+    print(update_freq)
     # Initialize data iterator
     itr = epoch_itr.next_epoch_itr(
         fix_batches_to_gpus=args.fix_batches_to_gpus,
@@ -203,7 +206,10 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
         else:
             print("Warning, the optimizer is ignoring the auxiliary gradients")
         # Take a step on the primary task
-        log_output = trainer.train_step(samples)\
+        log_output = trainer.train_step(
+            samples,
+            apply_ewc=args.ewc > 0
+        )
 
         if log_output is None:
             continue
@@ -255,6 +261,8 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
 
 def add_multiobj_args(parser):
     mto_group = parser.add_argument_group("Multi-objective related arguments")
+    mto_group.add_argument("--async-save", action="store_true",
+                           help="Save to ymp dir and async copy (maybe faster?)")
     mto_group.add_argument("--freeze-embeddings", action="store_true",
                            help="Freeze word embeddings when finetuning")
     mto_group.add_argument("--freeze-decoder", action="store_true",
@@ -267,6 +275,8 @@ def add_multiobj_args(parser):
                            "matrix")
     mto_group.add_argument("--precomputed-fisher", type=str,
                            help="Cache the Fisher to a file")
+    mto_group.add_argument("--ewc", type=float, default=0.0,
+                           help="Add elastic weight consolidation")
     mto_group.add_argument('--model-overrides', default="{}", type=str, metavar='DICT',
                            help='a dictionary used to override model args at generation '
                            'that were used during model training')

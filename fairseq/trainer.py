@@ -21,7 +21,7 @@ import torch
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.meters import AverageMeter, StopwatchMeter, TimeMeter
 from fairseq.optim import lr_scheduler
-from fairseq.fisher_information import inverse_fisher_rotate
+from fairseq.fisher_information import inverse_fisher_rotate, ewc_loss
 
 
 class Trainer(object):
@@ -59,6 +59,8 @@ class Trainer(object):
         self._wrapped_model = None
 
         self.fim = None
+        self.ewc_weight = 0.0
+        self.async_save = getattr(args, "async_save", False)
 
         self.init_meters(args)
 
@@ -139,7 +141,7 @@ class Trainer(object):
             checkpoint_utils.save_state(
                 filename, self.args, self.get_model().state_dict(), self.criterion,
                 self.optimizer, self.lr_scheduler, self.get_num_updates(),
-                self._optim_history, extra_state,
+                self._optim_history, extra_state, async_save=self.async_save,
             )
 
     def load_checkpoint(
@@ -236,7 +238,8 @@ class Trainer(object):
         dummy_batch=False,
         raise_oom=False,
         update_params=True,
-        clip_grad=True
+        clip_grad=True,
+        apply_ewc=False,
     ):
         """Do forward, backward and parameter update."""
         if self._dummy_batch is None:
@@ -279,10 +282,19 @@ class Trainer(object):
 
             try:
                 with maybe_no_sync():
+                    # EWC loss maybe
+                    ewc_term = None
+                    if apply_ewc and self.ewc_weight > 0:
+                        ewc_term = ewc_loss(
+                            self.model.named_parameters(),
+                            self.orig_params,
+                            self.fim,
+                            self.ewc_weight
+                        )
                     # forward and backward
                     loss, sample_size, logging_output = self.task.train_step(
                         sample, self.model, self.criterion, self.optimizer,
-                        ignore_grad
+                        ignore_grad, additional_loss=ewc_term,
                     )
 
                 if not ignore_grad:
@@ -524,6 +536,16 @@ class Trainer(object):
         """Set the number of parameters updates."""
         self._num_updates = num_updates
         self.lr_step_update()
+
+    def prepare_ewc(self, weight):
+        """Save current model for EWC"""
+        self.ewc_weight = weight
+        self.orig_params = {
+            name: p.clone().detach()
+            for name, p in self.model.named_parameters()
+        }
+        if self.fim is None:
+            print("| WARNING: setting up EWC but no FIM is available")
 
     def _prepare_sample(self, sample):
         if sample is None or len(sample) == 0:
