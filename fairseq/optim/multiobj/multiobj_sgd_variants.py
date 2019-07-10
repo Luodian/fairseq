@@ -42,7 +42,18 @@ class NullifyMultiObjSGD(MultiObjSGD):
         if (g_p * aux_g_p).sum() <= 0:
             return th.zeros_like(g_p)
         else:
+            return g_p
+
+
+@register_multiobj_optim("alternating")
+class AlternatingMultiObjSGD(MultiObjSGD):
+    """Nullify the gradient if the directions are not aligned"""
+
+    def combine_gradients(self, g_p, aux_g_p):
+        if (g_p * aux_g_p).sum() <= 0:
             return aux_g_p
+        else:
+            return g_p
 
 
 @register_multiobj_optim("cwise-ortho")
@@ -100,6 +111,16 @@ class SameContribMultiObjSGD(MultiObjSGD):
         diff_unit = diff / diff_norm
         dot = (g_p * diff_unit).sum()
         return g_p - dot * diff_unit
+
+
+@register_multiobj_optim("avg-renormed")
+class AvgRenormedObjSGD(MultiObjSGD):
+    """Average the gradients and renormalize to get a proper step size"""
+
+    def combine_gradients(self, g_p, aux_g_p):
+        sum_p = aux_g_p + g_p
+        sum_p_norm = sum_p.norm(2) + 1e-20
+        return sum_p/sum_p_norm
 
 
 @register_multiobj_optim("avg-ortho")
