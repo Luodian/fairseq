@@ -14,6 +14,8 @@ import os
 import re
 import traceback
 import shutil
+import subprocess
+import tempfile
 
 import torch
 from torch.serialization import default_restore_location
@@ -47,7 +49,8 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
         val_loss is not None and
         (not hasattr(save_checkpoint, 'best') or val_loss < save_checkpoint.best)
     )
-    checkpoint_conds['checkpoint_last.pt'] = True  # keep this last so that it's a symlink
+    # keep this last so that it's a symlink
+    checkpoint_conds['checkpoint_last.pt'] = True
 
     prev_best = getattr(save_checkpoint, 'best', val_loss)
     if val_loss is not None:
@@ -59,11 +62,13 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
     if hasattr(save_checkpoint, 'best'):
         extra_state.update({'best': save_checkpoint.best})
 
-    checkpoints = [os.path.join(args.save_dir, fn) for fn, cond in checkpoint_conds.items() if cond]
+    checkpoints = [os.path.join(args.save_dir, fn)
+                   for fn, cond in checkpoint_conds.items() if cond]
     if len(checkpoints) > 0:
         trainer.save_checkpoint(checkpoints[0], extra_state)
-        for cp in checkpoints[1:]:
-            shutil.copyfile(checkpoints[0], cp)
+        if not trainer.async_save:
+            for cp in checkpoints[1:]:
+                shutil.copyfile(checkpoints[0], cp)
 
         write_timer.stop()
         print('| saved checkpoint {} (epoch {} @ {} updates) (writing took {} seconds)'.format(
@@ -150,7 +155,8 @@ def load_model_ensemble(filenames, arg_overrides=None, task=None):
             were used during model training
         task (fairseq.tasks.FairseqTask, optional): task to use for loading
     """
-    ensemble, args, _task = _load_model_ensemble(filenames, arg_overrides, task)
+    ensemble, args, _task = _load_model_ensemble(
+        filenames, arg_overrides, task)
     return ensemble, args
 
 
@@ -218,7 +224,7 @@ def convert_state_dict_type(state_dict, ttype=torch.FloatTensor):
 
 def save_state(
     filename, args, model_state_dict, criterion, optimizer, lr_scheduler,
-    num_updates, optim_history=None, extra_state=None,
+    num_updates, optim_history=None, extra_state=None, async_save=True,
 ):
     if optim_history is None:
         optim_history = []
@@ -238,7 +244,23 @@ def save_state(
         'last_optimizer_state': convert_state_dict_type(optimizer.state_dict()),
         'extra_state': extra_state,
     }
-    torch_persistent_save(state_dict, filename)
+    # There is so much wrong with the following code
+    if async_save:
+        _, basename = os.path.split(filename)
+        _, tmp_filename = tempfile.mkstemp(suffix=basename)
+        print(f"Saving to {tmp_filename}")
+        try:
+            torch_persistent_save(state_dict, tmp_filename)
+            # Hail mary
+            print(f"Async copying {tmp_filename} to {filename}")
+            subprocess.Popen(["mv", tmp_filename, filename])
+        except OSError as e:
+            if "No space left on device" in str(e):
+                print("| No more space on device, saving directly "
+                      f"to {filename}")
+                torch_persistent_save(state_dict, filename)
+    else:
+        torch_persistent_save(state_dict, filename)
 
 
 def _upgrade_state_dict(state):
@@ -300,7 +322,8 @@ def _upgrade_state_dict(state):
     def set_defaults(cls):
         if not hasattr(cls, 'add_args'):
             return
-        parser = argparse.ArgumentParser(argument_default=argparse.SUPPRESS, allow_abbrev=False)
+        parser = argparse.ArgumentParser(
+            argument_default=argparse.SUPPRESS, allow_abbrev=False)
         cls.add_args(parser)
         # copied from argparse.py:
         defaults = argparse.Namespace()

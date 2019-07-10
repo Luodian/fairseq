@@ -21,6 +21,7 @@ import torch
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.meters import AverageMeter, StopwatchMeter, TimeMeter
 from fairseq.optim import lr_scheduler
+from fairseq.fisher_information import inverse_fisher_rotate, ewc_loss
 
 
 class Trainer(object):
@@ -57,6 +58,10 @@ class Trainer(object):
         self._prev_grad_norm = None
         self._wrapped_model = None
 
+        self.fim = None
+        self.ewc_weight = 0.0
+        self.async_save = getattr(args, "async_save", False)
+
         self.init_meters(args)
 
     def init_meters(self, args):
@@ -75,7 +80,8 @@ class Trainer(object):
         if args.fp16:
             self.meters['loss_scale'] = AverageMeter()  # dynamic loss scale
         self.meters['wall'] = TimeMeter()      # wall time in seconds
-        self.meters['train_wall'] = StopwatchMeter()  # train wall time in seconds
+        # train wall time in seconds
+        self.meters['train_wall'] = StopwatchMeter()
 
     @property
     def model(self):
@@ -101,26 +107,31 @@ class Trainer(object):
         return self._lr_scheduler
 
     def _build_optimizer(self):
-        params = list(filter(lambda p: p.requires_grad, self.model.parameters()))
+        params = list(filter(lambda p: p.requires_grad,
+                             self.model.parameters()))
         if self.args.fp16:
             if self.cuda and torch.cuda.get_device_capability(0)[0] < 7:
                 print('| WARNING: your device does NOT support faster training with --fp16, '
                       'please switch to FP32 which is likely to be faster')
             if self.args.memory_efficient_fp16:
-                self._optimizer = optim.MemoryEfficientFP16Optimizer.build_optimizer(self.args, params)
+                self._optimizer = optim.MemoryEfficientFP16Optimizer.build_optimizer(
+                    self.args, params)
             else:
-                self._optimizer = optim.FP16Optimizer.build_optimizer(self.args, params)
+                self._optimizer = optim.FP16Optimizer.build_optimizer(
+                    self.args, params)
         else:
             if self.cuda and torch.cuda.get_device_capability(0)[0] >= 7:
                 print('| NOTICE: your device may support faster training with --fp16')
             self._optimizer = optim.build_optimizer(self.args, params)
 
         if self.args.use_bmuf:
-            self._optimizer = optim.FairseqBMUF(self.args, params, self._optimizer)
+            self._optimizer = optim.FairseqBMUF(
+                self.args, params, self._optimizer)
 
         # We should initialize the learning rate scheduler immediately after
         # building the optimizer, so that the initial learning rate is set.
-        self._lr_scheduler = lr_scheduler.build_lr_scheduler(self.args, self.optimizer)
+        self._lr_scheduler = lr_scheduler.build_lr_scheduler(
+            self.args, self.optimizer)
         self._lr_scheduler.step_update(0)
 
     def save_checkpoint(self, filename, extra_state):
@@ -130,7 +141,7 @@ class Trainer(object):
             checkpoint_utils.save_state(
                 filename, self.args, self.get_model().state_dict(), self.criterion,
                 self.optimizer, self.lr_scheduler, self.get_num_updates(),
-                self._optim_history, extra_state,
+                self._optim_history, extra_state, async_save=self.async_save,
             )
 
     def load_checkpoint(
@@ -172,8 +183,10 @@ class Trainer(object):
                 'Optimizer does not match; please reset the optimizer (--reset-optimizer).'
 
             if not reset_lr_scheduler:
-                self.lr_scheduler.load_state_dict(last_optim['lr_scheduler_state'])
-            self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
+                self.lr_scheduler.load_state_dict(
+                    last_optim['lr_scheduler_state'])
+            self.optimizer.load_state_dict(
+                last_optim_state, optimizer_overrides)
 
             self.set_num_updates(last_optim['num_updates'])
 
@@ -200,7 +213,8 @@ class Trainer(object):
     def get_train_iterator(self, epoch, combine=True):
         """Return an EpochBatchIterator over the training set for a given epoch."""
         print('| loading train data for epoch {}'.format(epoch))
-        self.task.load_dataset(self.args.train_subset, epoch=epoch, combine=combine)
+        self.task.load_dataset(self.args.train_subset,
+                               epoch=epoch, combine=combine)
         return self.task.get_batch_iterator(
             dataset=self.task.dataset(self.args.train_subset),
             max_tokens=self.args.max_tokens,
@@ -218,7 +232,15 @@ class Trainer(object):
             epoch=epoch,
         )
 
-    def train_step(self, samples, dummy_batch=False, raise_oom=False):
+    def train_step(
+        self,
+        samples,
+        dummy_batch=False,
+        raise_oom=False,
+        update_params=True,
+        clip_grad=True,
+        apply_ewc=False,
+    ):
         """Do forward, backward and parameter update."""
         if self._dummy_batch is None:
             self._dummy_batch = samples[0]
@@ -260,10 +282,19 @@ class Trainer(object):
 
             try:
                 with maybe_no_sync():
+                    # EWC loss maybe
+                    ewc_term = None
+                    if apply_ewc and self.ewc_weight > 0:
+                        ewc_term = ewc_loss(
+                            self.model.named_parameters(),
+                            self.orig_params,
+                            self.fim,
+                            self.ewc_weight
+                        )
                     # forward and backward
                     loss, sample_size, logging_output = self.task.train_step(
                         sample, self.model, self.criterion, self.optimizer,
-                        ignore_grad
+                        ignore_grad, additional_loss=ewc_term,
                     )
 
                 if not ignore_grad:
@@ -337,12 +368,20 @@ class Trainer(object):
         try:
             # normalize grads by sample size
             if sample_size > 0:
-                self.optimizer.multiply_grads(self.args.distributed_world_size / float(sample_size))
+                self.optimizer.multiply_grads(
+                    self.args.distributed_world_size / float(sample_size))
 
             # clip grads
-            grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
-            self._prev_grad_norm = grad_norm
+            if clip_grad:
+                grad_norm = self.optimizer.clip_grad_norm(self.args.clip_norm)
+                self._prev_grad_norm = grad_norm
 
+            if self.args.inverse_fisher and self.fim is not None:
+                inverse_fisher_rotate(self.model.named_parameters(), self.fim)
+
+            # Skip update
+            if not update_params:
+                return logging_output
             # take an optimization step
             self.optimizer.step()
             self.set_num_updates(self.get_num_updates() + 1)
@@ -361,13 +400,15 @@ class Trainer(object):
             self.meters['clip'].update(
                 1. if grad_norm > self.args.clip_norm and self.args.clip_norm > 0 else 0.
             )
-            self.meters['train_loss'].update(logging_output.get('loss', 0), sample_size)
+            self.meters['train_loss'].update(
+                logging_output.get('loss', 0), sample_size)
             if 'train_acc' in self.meters:
                 self.meters['train_acc'].update(
                     logging_output.get('acc', 0), sample_size)
 
             if 'nll_loss' in logging_output:
-                self.meters['train_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+                self.meters['train_nll_loss'].update(
+                    logging_output.get('nll_loss', 0), ntokens)
         except OverflowError as e:
             print('| WARNING: overflow detected, ' + str(e))
             self.zero_grad()
@@ -434,13 +475,15 @@ class Trainer(object):
 
         # update meters for validation
         ntokens = logging_output.get('ntokens', 0)
-        self.meters['valid_loss'].update(logging_output.get('loss', 0), sample_size)
+        self.meters['valid_loss'].update(
+            logging_output.get('loss', 0), sample_size)
         if 'valid_acc' in self.meters:
             self.meters['valid_acc'].update(
                 logging_output.get('acc', 0), sample_size)
 
         if 'nll_loss' in logging_output:
-            self.meters['valid_nll_loss'].update(logging_output.get('nll_loss', 0), ntokens)
+            self.meters['valid_nll_loss'].update(
+                logging_output.get('nll_loss', 0), ntokens)
 
         return logging_output
 
@@ -493,6 +536,16 @@ class Trainer(object):
         """Set the number of parameters updates."""
         self._num_updates = num_updates
         self.lr_step_update()
+
+    def prepare_ewc(self, weight):
+        """Save current model for EWC"""
+        self.ewc_weight = weight
+        self.orig_params = {
+            name: p.clone().detach()
+            for name, p in self.model.named_parameters()
+        }
+        if self.fim is None:
+            print("| WARNING: setting up EWC but no FIM is available")
 
     def _prepare_sample(self, sample):
         if sample is None or len(sample) == 0:
