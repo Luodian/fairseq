@@ -208,7 +208,15 @@ class FairseqTask(object):
                 no_repeat_ngram_size=getattr(args, 'no_repeat_ngram_size', 0),
             )
 
-    def train_step(self, sample, model, criterion, optimizer, ignore_grad=False):
+    def train_step(
+        self,
+        sample,
+        model,
+        criterion,
+        optimizer,
+        ignore_grad=False,
+        additional_loss=None
+    ):
         """
         Do forward and backward, and return the loss as computed by *criterion*
         for the given *model* and *sample*.
@@ -220,6 +228,7 @@ class FairseqTask(object):
             criterion (~fairseq.criterions.FairseqCriterion): the criterion
             optimizer (~fairseq.optim.FairseqOptimizer): the optimizer
             ignore_grad (bool): multiply loss by 0 if this is set to True
+            additional_loss (Tensor): Arbitrary additional loss term
 
         Returns:
             tuple:
@@ -230,6 +239,8 @@ class FairseqTask(object):
         """
         model.train()
         loss, sample_size, logging_output = criterion(model, sample)
+        if additional_loss is not None:
+            loss += additional_loss
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
