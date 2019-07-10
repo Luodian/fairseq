@@ -233,8 +233,6 @@ class GroupedIterator(object):
         chunk = []
         try:
             self._build_chunk(chunk)
-            for _ in range(self.chunk_size):
-                chunk.append(next(self.itr))
         except StopIteration as e:
             if len(chunk) == 0:
                 if self.bottomless:
