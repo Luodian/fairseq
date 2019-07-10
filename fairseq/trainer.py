@@ -61,6 +61,7 @@ class Trainer(object):
         self.fim = None
         self.ewc_weight = 0.0
         self.async_save = getattr(args, "async_save", False)
+        self.save_only_model = getattr(args, "save_only_model", False)
 
         self.init_meters(args)
 
@@ -142,6 +143,7 @@ class Trainer(object):
                 filename, self.args, self.get_model().state_dict(), self.criterion,
                 self.optimizer, self.lr_scheduler, self.get_num_updates(),
                 self._optim_history, extra_state, async_save=self.async_save,
+                only_model=self.save_only_model
             )
 
     def load_checkpoint(

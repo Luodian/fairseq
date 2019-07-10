@@ -262,7 +262,9 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
 def add_multiobj_args(parser):
     mto_group = parser.add_argument_group("Multi-objective related arguments")
     mto_group.add_argument("--async-save", action="store_true",
-                           help="Save to ymp dir and async copy (maybe faster?)")
+                           help="Save to ymp dir and async copy (much faster)")
+    mto_group.add_argument("--save-only-model", action="store_true",
+                           help="Don't save the optimizer history")
     mto_group.add_argument("--freeze-embeddings", action="store_true",
                            help="Freeze word embeddings when finetuning")
     mto_group.add_argument("--freeze-decoder", action="store_true",

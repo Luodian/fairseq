@@ -224,7 +224,7 @@ def convert_state_dict_type(state_dict, ttype=torch.FloatTensor):
 
 def save_state(
     filename, args, model_state_dict, criterion, optimizer, lr_scheduler,
-    num_updates, optim_history=None, extra_state=None, async_save=True,
+    num_updates, optim_history=None, extra_state=None, async_save=True, only_model=False
 ):
     if optim_history is None:
         optim_history = []
@@ -233,29 +233,34 @@ def save_state(
     state_dict = {
         'args': args,
         'model': model_state_dict if model_state_dict else {},
-        'optimizer_history': optim_history + [
+        'optimizer_history': [],
+        'last_optimizer_state': {},
+        'extra_state': extra_state,
+    }
+    # Also save optimizer state
+    if not only_model:
+        state_dict["optimizer_history"] = optim_history + [
             {
                 'criterion_name': criterion.__class__.__name__,
                 'optimizer_name': optimizer.__class__.__name__,
                 'lr_scheduler_state': lr_scheduler.state_dict(),
                 'num_updates': num_updates,
             }
-        ],
-        'last_optimizer_state': convert_state_dict_type(optimizer.state_dict()),
-        'extra_state': extra_state,
-    }
+        ]
+        state_dict["last_optimizer_state"] = convert_state_dict_type(
+            optimizer.state_dict())
     # There is so much wrong with the following code
     if async_save:
         _, basename = os.path.split(filename)
         _, tmp_filename = tempfile.mkstemp(suffix=basename)
         print(f"Saving to {tmp_filename}")
         try:
-            torch_persistent_save(state_dict, tmp_filename)
+            torch.save(state_dict, tmp_filename)
             # Hail mary
             print(f"Async copying {tmp_filename} to {filename}")
             subprocess.Popen(["mv", tmp_filename, filename])
-        except OSError as e:
-            if "No space left on device" in str(e):
+        except Exception as e:
+            if "No space left" in str(e):
                 print("| No more space on device, saving directly "
                       f"to {filename}")
                 torch_persistent_save(state_dict, filename)
