@@ -11,9 +11,60 @@ from fairseq.meters import AverageMeter, StopwatchMeter
 from fairseq.fisher_information import estimate_diagonal_fisher
 from train import (
     checkpoint_utils,
-    validate,
+    get_valid_stats,
     get_training_stats,
 )
+
+
+def validate_on_datasets(args, trainer, task, epoch_itr, named_datasets):
+    """Evaluate the model on multiple datasets"""
+    valid_losses = []
+    for name, dataset in named_datasets.items():
+        # Initialize data iterator
+        itr = task.get_batch_iterator(
+            dataset=dataset,
+            max_tokens=args.max_tokens,
+            max_sentences=args.max_sentences_valid,
+            max_positions=utils.resolve_max_positions(
+                task.max_positions(),
+                trainer.get_model().max_positions(),
+            ),
+            ignore_invalid_inputs=args.skip_invalid_size_inputs_valid_test,
+            required_batch_size_multiple=args.required_batch_size_multiple,
+            seed=args.seed,
+            num_shards=args.distributed_world_size,
+            shard_id=args.distributed_rank,
+            num_workers=args.num_workers,
+        ).next_epoch_itr(shuffle=False)
+        progress = progress_bar.build_progress_bar(
+            args, itr, epoch_itr.epoch,
+            prefix=f"valid on '{name}'",
+            no_progress_bar='simple'
+        )
+
+        # reset validation loss meters
+        for k in ['valid_loss', 'valid_nll_loss']:
+            meter = trainer.get_meter(k)
+            if meter is not None:
+                meter.reset()
+        extra_meters = collections.defaultdict(lambda: AverageMeter())
+
+        for sample in progress:
+            log_output = trainer.valid_step(sample)
+
+            for k, v in log_output.items():
+                if k in ['loss', 'nll_loss', 'ntokens', 'nsentences', 'sample_size']:
+                    continue
+                extra_meters[k].update(v)
+
+        # log validation stats
+        stats = get_valid_stats(trainer)
+        for k, meter in extra_meters.items():
+            stats[k] = meter.avg
+        progress.print(stats, tag=name, step=trainer.get_num_updates())
+
+        valid_losses.append(stats['loss'].avg)
+    return valid_losses
 
 
 def main(args, init_distributed=False):
@@ -129,7 +180,8 @@ def main(args, init_distributed=False):
             args.n_fisher_samples,
             precomputed=args.precomputed_fisher
         )
-        trainer.fim = fim
+        trainer.fim = {name: f + args.fisher_damping
+                       for name, f in fim.items()}
     # EWC
     if args.ewc > 0.0:
         trainer.prepare_ewc(args.ewc)
@@ -142,13 +194,22 @@ def main(args, init_distributed=False):
     train_meter.start()
     valid_losses = [None]
     valid_subsets = args.valid_subset.split(',')
+    datasets = args.data.split(":")
+    valid_datasets = {
+        f"{datasets[0]}-{subset}": task.dataset(subset)
+        for subset in valid_subsets
+    }
+    if args.validate_on_both:
+        for subset in valid_subsets:
+            subset_name = f"{datasets[1]}-{subset}"
+            valid_datasets[subset_name] = task.dataset(subset, idx=1)
     while lr > args.min_lr and epoch_itr.epoch < max_epoch and trainer.get_num_updates() < max_update:
         # train for one epoch
         train(args, trainer, task, epoch_itr, epoch_aux_itr)
 
         if not args.disable_validation and epoch_itr.epoch % args.validate_interval == 0:
-            valid_losses = validate(
-                args, trainer, task, epoch_itr, valid_subsets)
+            valid_losses = validate_on_datasets(
+                args, trainer, task, epoch_itr, valid_datasets)
         else:
             valid_losses = [None]
 
@@ -195,6 +256,15 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
 
     extra_meters = collections.defaultdict(lambda: AverageMeter())
     valid_subsets = args.valid_subset.split(',')
+    datasets = args.data.split(":")
+    valid_datasets = {
+        f"{datasets[0]}-{subset}": task.dataset(subset)
+        for subset in valid_subsets
+    }
+    if args.validate_on_both:
+        for subset in valid_subsets:
+            subset_name = f"{datasets[1]}-{subset}"
+            valid_datasets[subset_name] = task.dataset(subset, idx=1)
     max_update = args.max_update or math.inf
     for i, samples in enumerate(progress, start=epoch_itr.iterations_in_epoch):
         # Record gradients from auxiliary data
@@ -237,9 +307,10 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
             and num_updates % args.save_interval_updates == 0
             and num_updates > 0
         ):
-            valid_losses = validate(
-                args, trainer, task, epoch_itr, valid_subsets)
-            checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, None)
+            val_losses = validate_on_datasets(
+                args, trainer, task, epoch_itr, valid_datasets)
+            checkpoint_utils.save_checkpoint(
+                args, trainer, epoch_itr, val_losses[0])
 
         if num_updates >= max_update:
             break
@@ -262,9 +333,11 @@ def train(args, trainer, task, epoch_itr, epoch_aux_itr, fim=None):
 def add_multiobj_args(parser):
     mto_group = parser.add_argument_group("Multi-objective related arguments")
     mto_group.add_argument("--async-save", action="store_true",
-                           help="Save to ymp dir and async copy (much faster)")
+                           help="Save to tmp dir and async copy (much faster)")
     mto_group.add_argument("--save-only-model", action="store_true",
                            help="Don't save the optimizer history")
+    mto_group.add_argument("--validate-on-both", action="store_true",
+                           help="Validate on both in and out of domain data")
     mto_group.add_argument("--freeze-embeddings", action="store_true",
                            help="Freeze word embeddings when finetuning")
     mto_group.add_argument("--freeze-decoder", action="store_true",
@@ -277,6 +350,8 @@ def add_multiobj_args(parser):
                            "matrix")
     mto_group.add_argument("--precomputed-fisher", type=str,
                            help="Cache the Fisher to a file")
+    mto_group.add_argument("--fisher-damping", type=float, default=0,
+                           help="F -> (F + alpha * I)")
     mto_group.add_argument("--ewc", type=float, default=0.0,
                            help="Add elastic weight consolidation")
     mto_group.add_argument('--model-overrides', default="{}", type=str, metavar='DICT',

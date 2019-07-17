@@ -37,6 +37,9 @@ def estimate_diagonal_fisher(
                 f" from {precomputed}: the following parameters are in the"
                 f" model but not in the FIM {list(not_in_fim)}"
             )
+        # Send to the appropriate device
+        model_device = list(trainer.model.parameters())[0].device
+        fim = {name: f.to(model_device) for name, f in fim.items()}
         return fim
     else:
         fim = _estimate_diagonal_fisher(args, trainer, epoch_itr, n_steps)

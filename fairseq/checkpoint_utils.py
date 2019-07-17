@@ -66,7 +66,10 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
                    for fn, cond in checkpoint_conds.items() if cond]
     if len(checkpoints) > 0:
         trainer.save_checkpoint(checkpoints[0], extra_state)
-        if not trainer.async_save:
+        if trainer.async_save:
+            for cp in checkpoints[1:]:
+                trainer.save_checkpoint(cp, extra_state)
+        else:
             for cp in checkpoints[1:]:
                 shutil.copyfile(checkpoints[0], cp)
 
@@ -283,6 +286,13 @@ def _upgrade_state_dict(state):
         state['last_optimizer_state'] = state['optimizer']
         del state['optimizer']
         del state['best_loss']
+    elif len(state["optimizer_history"]) == 0:
+        state['optimizer_history'] = [
+            {
+                'criterion_name': 'CrossEntropyCriterion',
+                'best_loss': 0,
+            },
+        ]
     # move extra_state into sub-dictionary
     if 'epoch' in state and 'extra_state' not in state:
         state['extra_state'] = {
