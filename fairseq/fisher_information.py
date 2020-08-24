@@ -79,14 +79,15 @@ def _estimate_diagonal_fisher(args, trainer, epoch_itr, n_steps):
     return FIM
 
 
-def inverse_fisher_rotate(params, fim):
+def inverse_fisher_rotate(params, fim, renorm_max=True):
     """Multiply by the inverse diagonal FIM and renormalize"""
     params = {name: p for name, p in params}
     # Rescale gradients
     grads = {name: p.grad / (fim[name]+1e-12) for name, p in params.items()}
     # compute old and new gradient norms
-    grads_norm = th.cat([p.grad.view(-1) for p in params.values()]).norm(2)
-    new_norm = th.cat([g.view(-1) for g in grads.values()]).norm(2)
+    p = float("inf") if renorm_max else 2
+    grads_norm = th.cat([p.grad.view(-1) for p in params.values()]).norm(p)
+    new_norm = th.cat([g.view(-1) for g in grads.values()]).norm(p)
     # Rescale so that the new gradient has the same norm
     ratio = (grads_norm / new_norm).item()
     grads = {name: g * ratio for name, g in grads.items()}
